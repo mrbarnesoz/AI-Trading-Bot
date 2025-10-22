@@ -1,0 +1,30 @@
+data:
+  symbol: "AAPL"
+  start_date: "2018-01-01"
+  end_date: null
+  interval: "1d"
+  source: "yfinance"
+  cache_dir: "data/raw"
+features:
+  indicators: ["sma", "ema", "rsi", "macd"]
+  sma_window: 10
+  ema_window: 21
+  rsi_window: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+model:
+  test_size: 0.2
+  random_state: 42
+  model_type: "random_forest"
+  n_estimators: 200
+  max_depth: 6
+  n_jobs: -1
+  model_dir: "models"
+backtest:
+  initial_capital: 10000
+  transaction_cost: 0.001
+  risk_free_rate: 0.01
+pipeline:
+  lookahead: 1
+  target_column: "target_return"

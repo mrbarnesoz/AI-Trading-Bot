@@ -1,0 +1,52 @@
+"""Command-line entry point for the AI Trading Bot."""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+from ai_trading_bot.config import load_config
+from ai_trading_bot.pipeline import backtest, prepare_dataset, train
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="AI Trading Bot command-line interface.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    parser_download = subparsers.add_parser("download", help="Download OHLCV market data.")
+    parser_download.add_argument("--config", default="config.yaml", help="Path to configuration file.")
+    parser_download.add_argument("--force", action="store_true", help="Force download even if cached data exists.")
+
+    parser_train = subparsers.add_parser("train", help="Train the machine learning model.")
+    parser_train.add_argument("--config", default="config.yaml", help="Path to configuration file.")
+    parser_train.add_argument("--force-download", action="store_true", help="Refresh downloaded data before training.")
+
+    parser_backtest = subparsers.add_parser("backtest", help="Run the backtest using the trained model.")
+    parser_backtest.add_argument("--config", default="config.yaml", help="Path to configuration file.")
+    parser_backtest.add_argument("--force-download", action="store_true", help="Refresh data before backtesting.")
+    parser_backtest.add_argument("--threshold", type=float, default=0.55, help="Probability threshold for signals.")
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == "download":
+        config = load_config(args.config)
+        prepare_dataset(config, force_download=args.force)
+    elif args.command == "train":
+        metrics = train(args.config, force_download=args.force_download)
+        print(json.dumps(metrics, indent=2))
+    elif args.command == "backtest":
+        _, result = backtest(
+            args.config, force_download=args.force_download, probability_threshold=args.threshold
+        )
+        print(json.dumps(result.summary, indent=2))
+    else:  # pragma: no cover - argparse prevents this
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

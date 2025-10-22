@@ -1,3 +1,22 @@
+Metadata-Version: 2.4
+Name: ai-trading-bot
+Version: 0.1.0
+Summary: AI-assisted trading bot with data pipeline, ML model training, and backtesting utilities.
+Author: AI Trading Bot Maintainers
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: scikit-learn>=1.3
+Requires-Dist: yfinance>=0.2.30
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: joblib>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Requires-Dist: black>=23.7; extra == "dev"
+Requires-Dist: ruff>=0.1.9; extra == "dev"
+
 # AI Trading Bot
 
 An end-to-end reference implementation of an AI-assisted trading bot. The app provides utilities to download OHLCV data, engineer technical indicator features, train a machine learning classifier, and evaluate the strategy via vectorised backtesting.

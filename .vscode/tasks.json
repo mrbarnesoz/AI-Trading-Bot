@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ai-trading-bot: train",
+            "type": "shell",
+            "command": "python",
+            "args": ["-m", "ai_trading_bot", "train"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ai-trading-bot: backtest",
+            "type": "shell",
+            "command": "python",
+            "args": ["-m", "ai_trading_bot", "backtest"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "pytest",
+            "type": "shell",
+            "command": "python",
+            "args": ["-m", "pytest"],
+            "presentation": {
+                "reveal": "never",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
