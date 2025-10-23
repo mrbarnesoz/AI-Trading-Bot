@@ -1,0 +1,11 @@
+# BitMEX data sources
+rest:
+  base_url: "https://public.bitmex.com"
+  funding_endpoint: "/funding"
+  open_interest_endpoint: "/openInterest"
+archives_base_url: "https://s3-eu-west-1.amazonaws.com/public.bitmex.com/data"
+websocket:
+  url: "wss://www.bitmex.com/realtime"
+  channels:
+    - "trade"
+    - "orderBookL2"

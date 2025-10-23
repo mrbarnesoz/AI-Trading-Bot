@@ -1,0 +1,7 @@
+Daily Report (2025-10-22 UTC)
+PnL: 0.00
+Sharpe: 0.00
+Latency (ms): 45.00
+Feature PSI: 0.10
+QC trade warnings: 0
+QC snapshot warnings: 0

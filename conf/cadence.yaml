@@ -1,0 +1,15 @@
+# Cadence and scheduling configuration
+l2_snapshot_interval: "250ms"
+bar_resample_base: "1m"
+aggregated_bars:
+  - "1m"
+  - "5m"
+  - "15m"
+  - "1h"
+  - "4h"
+  - "1d"
+daily_schedule:
+  roll_raw: "00:05"
+  build_silver: "00:20"
+  qc_publish: "00:40"
+  sla_ready: "01:00"

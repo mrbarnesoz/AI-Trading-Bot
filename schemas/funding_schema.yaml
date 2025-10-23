@@ -1,0 +1,15 @@
+name: funding
+description: BitMEX funding rate observations
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+  - name: symbol
+    dtype: string
+  - name: funding_rate
+    dtype: float64
+  - name: predicted_rate
+    dtype: float64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol]
+sort: [symbol, ts]

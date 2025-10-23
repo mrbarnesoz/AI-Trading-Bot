@@ -1,0 +1,22 @@
+{
+  "per_symbol": [
+    {
+      "symbol": "AAPL",
+      "average_monthly_gain": 0.053879379870863886,
+      "monthly_positive_ratio": 1.0,
+      "trade_win_rate": 0.5110294117647058,
+      "total_return": 0.11147468645536063,
+      "annualised_return": 0.10287072134564457
+    }
+  ],
+  "aggregate": {
+    "symbols_tested": [
+      "AAPL"
+    ],
+    "average_monthly_gain_mean": 0.053879379870863886,
+    "average_monthly_gain_std": 0.0,
+    "monthly_positive_ratio_mean": 1.0,
+    "trade_win_rate_mean": 0.5110294117647058,
+    "total_return_mean": 0.11147468645536063
+  }
+}

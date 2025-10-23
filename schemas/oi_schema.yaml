@@ -1,0 +1,13 @@
+name: open_interest
+description: BitMEX open interest series
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+  - name: symbol
+    dtype: string
+  - name: open_interest
+    dtype: float64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol]
+sort: [symbol, ts]

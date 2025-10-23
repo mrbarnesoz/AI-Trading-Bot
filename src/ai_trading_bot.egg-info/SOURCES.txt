@@ -13,6 +13,8 @@ src/ai_trading_bot/backtesting/__init__.py
 src/ai_trading_bot/backtesting/simulator.py
 src/ai_trading_bot/data/__init__.py
 src/ai_trading_bot/data/fetch.py
+src/ai_trading_bot/decision/__init__.py
+src/ai_trading_bot/decision/mode_selector.py
 src/ai_trading_bot/evaluation/__init__.py
 src/ai_trading_bot/evaluation/metrics.py
 src/ai_trading_bot/features/__init__.py
@@ -25,3 +27,5 @@ src/ai_trading_bot/utils/__init__.py
 src/ai_trading_bot/utils/logging.py
 tests/test_backtesting.py
 tests/test_features.py
+tests/test_mode_selector.py
+tests/test_strategy.py

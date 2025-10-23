@@ -1,0 +1,63 @@
+name: l2_snapshots
+description: Top-of-book snapshots derived from L2 replay
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+  - name: symbol
+    dtype: string
+  - name: bbp
+    dtype: float64
+  - name: bap
+    dtype: float64
+  - name: spread
+    dtype: float64
+  - name: mid
+    dtype: float64
+  - name: bid_px_1
+    dtype: float64
+  - name: bid_px_2
+    dtype: float64
+  - name: bid_px_3
+    dtype: float64
+  - name: bid_px_4
+    dtype: float64
+  - name: bid_px_5
+    dtype: float64
+  - name: bid_sz_1
+    dtype: float64
+  - name: bid_sz_2
+    dtype: float64
+  - name: bid_sz_3
+    dtype: float64
+  - name: bid_sz_4
+    dtype: float64
+  - name: bid_sz_5
+    dtype: float64
+  - name: ask_px_1
+    dtype: float64
+  - name: ask_px_2
+    dtype: float64
+  - name: ask_px_3
+    dtype: float64
+  - name: ask_px_4
+    dtype: float64
+  - name: ask_px_5
+    dtype: float64
+  - name: ask_sz_1
+    dtype: float64
+  - name: ask_sz_2
+    dtype: float64
+  - name: ask_sz_3
+    dtype: float64
+  - name: ask_sz_4
+    dtype: float64
+  - name: ask_sz_5
+    dtype: float64
+  - name: total_bid_sz_1_5
+    dtype: float64
+  - name: total_ask_sz_1_5
+    dtype: float64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol]
+sort: [symbol, ts]

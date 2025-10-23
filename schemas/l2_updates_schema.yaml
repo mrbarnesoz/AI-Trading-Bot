@@ -1,0 +1,23 @@
+name: l2_updates
+description: Normalized BitMEX level 2 order book updates
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+  - name: symbol
+    dtype: string
+  - name: action
+    dtype: categorical
+    values: ["insert", "update", "delete"]
+  - name: side
+    dtype: categorical
+    values: ["Bid", "Ask"]
+  - name: level_id
+    dtype: uint64
+  - name: price
+    dtype: float64
+  - name: size
+    dtype: float64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol, side, level_id, action]
+sort: [symbol, ts, side, level_id]

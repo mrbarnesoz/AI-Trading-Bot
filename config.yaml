@@ -25,6 +25,53 @@ backtest:
   initial_capital: 10000
   transaction_cost: 0.001
   risk_free_rate: 0.01
+  position_capital_fraction: 0.1
+  max_total_capital_fraction: 0.5
+  max_position_units: 3
 pipeline:
   lookahead: 1
   target_column: "target_return"
+  long_threshold: 0.55
+  short_threshold: 0.45
+  long_bands: [0.55, 0.65, 0.8]
+  short_bands: [0.45, 0.35, 0.25]
+modes:
+  - name: "scalping"
+    interval: "1m"
+    lookback_days: 2
+    description: "Sub-minute scalping on high-volatility conditions."
+    long_threshold: 0.6
+    short_threshold: 0.4
+    long_bands: [0.6, 0.7, 0.85]
+    short_bands: [0.4, 0.3, 0.15]
+    trend_weight: 0.7
+    volatility_weight: 1.5
+    position_fraction: 0.05
+    max_total_fraction: 0.2
+    max_position_units: 4
+  - name: "intraday"
+    interval: "5m"
+    lookback_days: 7
+    description: "Intraday trading on 1-15 minute bars."
+    long_threshold: 0.55
+    short_threshold: 0.45
+    long_bands: [0.55, 0.65, 0.8]
+    short_bands: [0.45, 0.35, 0.2]
+    trend_weight: 1.0
+    volatility_weight: 1.0
+    position_fraction: 0.1
+    max_total_fraction: 0.4
+    max_position_units: 3
+  - name: "swing"
+    interval: "1h"
+    lookback_days: 60
+    description: "Swing trading on hourly/daily bars."
+    long_threshold: 0.6
+    short_threshold: 0.4
+    long_bands: [0.6, 0.7]
+    short_bands: [0.4, 0.3]
+    trend_weight: 1.4
+    volatility_weight: 0.8
+    position_fraction: 0.2
+    max_total_fraction: 0.6
+    max_position_units: 2

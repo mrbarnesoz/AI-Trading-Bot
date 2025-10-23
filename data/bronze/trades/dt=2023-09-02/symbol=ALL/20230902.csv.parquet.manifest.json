@@ -1,0 +1,7 @@
+{
+  "path": "data\\bronze\\trades\\dt=2023-09-02\\symbol=ALL\\20230902.csv.parquet",
+  "rows": 85047,
+  "bytes": 883559,
+  "ingested_at": "2025-10-22T22:19:42.215637+00:00",
+  "source": "data\\raw\\trade\\dt=2023-09-02\\20230902.csv.gz"
+}

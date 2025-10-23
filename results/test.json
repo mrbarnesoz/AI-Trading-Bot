@@ -1,0 +1,13 @@
+{
+  "trade_warnings": [
+    {
+      "file": "data\\bronze\\trades\\dt=2014-11-22\\symbol=ALL\\20141122.csv.parquet",
+      "coverage": 0.001388888888888889
+    },
+    {
+      "file": "data\\bronze\\trades\\dt=2014-11-23\\symbol=ALL\\20141123.csv.parquet",
+      "coverage": 0.001388888888888889
+    }
+  ],
+  "snapshot_warnings": []
+}

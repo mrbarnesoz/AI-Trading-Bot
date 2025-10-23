@@ -1,0 +1,9 @@
+# Storage configuration for BitMEX ETL pipeline
+bronze_root: "data/bronze"
+silver_root: "data/silver"
+gold_root: "data/gold"
+raw_root: "data/raw"
+duckdb_path: "warehouse.duckdb"
+compression: "zstd"
+auto_ingest_l2: false
+l2_archive_prefix: "data/orderBookL2_25"

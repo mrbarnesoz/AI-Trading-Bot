@@ -24,7 +24,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser_backtest = subparsers.add_parser("backtest", help="Run the backtest using the trained model.")
     parser_backtest.add_argument("--config", default="config.yaml", help="Path to configuration file.")
     parser_backtest.add_argument("--force-download", action="store_true", help="Refresh data before backtesting.")
-    parser_backtest.add_argument("--threshold", type=float, default=0.55, help="Probability threshold for signals.")
+    parser_backtest.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="(Deprecated) Alias for --long-threshold when only long trades are desired.",
+    )
+    parser_backtest.add_argument(
+        "--long-threshold",
+        type=float,
+        default=None,
+        help="Probability required to enter a long position (defaults to config).",
+    )
+    parser_backtest.add_argument(
+        "--short-threshold",
+        type=float,
+        default=None,
+        help="Probability at or below which to enter a short position (defaults to config).",
+    )
 
     return parser
 
@@ -40,10 +57,21 @@ def main() -> None:
         metrics = train(args.config, force_download=args.force_download)
         print(json.dumps(metrics, indent=2))
     elif args.command == "backtest":
-        _, result = backtest(
-            args.config, force_download=args.force_download, probability_threshold=args.threshold
+        long_threshold = args.long_threshold if args.long_threshold is not None else args.threshold
+        short_threshold = args.short_threshold
+        decision, _, result = backtest(
+            args.config,
+            force_download=args.force_download,
+            long_threshold=long_threshold,
+            short_threshold=short_threshold,
         )
-        print(json.dumps(result.summary, indent=2))
+        payload = {
+            "mode": decision.mode.name,
+            "mode_score": decision.score,
+            "mode_metrics": decision.metrics,
+            "summary": result.summary,
+        }
+        print(json.dumps(payload, indent=2))
     else:  # pragma: no cover - argparse prevents this
         parser.print_help()
 

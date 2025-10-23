@@ -19,16 +19,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.55,
-        help="Probability threshold for entering a long position.",
+        default=None,
+        help="(Deprecated) Alias for --long-threshold.",
+    )
+    parser.add_argument(
+        "--long-threshold",
+        type=float,
+        default=None,
+        help="Probability required to enter a long position (defaults to config).",
+    )
+    parser.add_argument(
+        "--short-threshold",
+        type=float,
+        default=None,
+        help="Probability at or below which to enter a short position (defaults to config).",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    _, result = backtest(args.config, force_download=args.force_download, probability_threshold=args.threshold)
-    print(json.dumps(result.summary, indent=2))
+    long_threshold = args.long_threshold if args.long_threshold is not None else args.threshold
+    short_threshold = args.short_threshold
+    decision, _, result = backtest(
+        args.config,
+        force_download=args.force_download,
+        long_threshold=long_threshold,
+        short_threshold=short_threshold,
+    )
+    payload = {
+        "mode": decision.mode.name,
+        "mode_score": decision.score,
+        "mode_metrics": decision.metrics,
+        "summary": result.summary,
+    }
+    print(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

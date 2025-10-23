@@ -1,0 +1,22 @@
+name: trades
+description: Normalized BitMEX trade prints
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+    description: Exchange timestamp
+  - name: symbol
+    dtype: string
+  - name: side
+    dtype: categorical
+    values: ["Buy", "Sell"]
+  - name: price
+    dtype: float64
+  - name: size
+    dtype: int64
+    description: Contracts traded
+  - name: tick_id
+    dtype: uint64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol, tick_id]
+sort: [ts, symbol, tick_id]

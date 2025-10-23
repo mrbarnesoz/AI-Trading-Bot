@@ -1,0 +1,27 @@
+name: ohlcv
+description: Aggregated OHLCV bars from trades
+columns:
+  - name: ts
+    dtype: timestamp[ns, UTC]
+  - name: symbol
+    dtype: string
+  - name: timeframe
+    dtype: string
+  - name: open
+    dtype: float64
+  - name: high
+    dtype: float64
+  - name: low
+    dtype: float64
+  - name: close
+    dtype: float64
+  - name: volume
+    dtype: float64
+  - name: vwap
+    dtype: float64
+  - name: trade_count
+    dtype: int64
+  - name: ingest_ts
+    dtype: timestamp[ns, UTC]
+primary_key: [ts, symbol, timeframe]
+sort: [symbol, timeframe, ts]
