@@ -549,6 +549,18 @@ function Start-PrefectWorkerOrAgent {
 }
 
 function Start-Gui {
+    function Launch-GuiBrowser {
+        param(
+            [Parameter(Mandatory = $true)][string]$Url
+        )
+        try {
+            Start-Process $Url | Out-Null
+            Write-Log "Opening browser at $Url" "INFO"
+        } catch {
+            Write-Log "Unable to launch browser for $Url: $($_.Exception.Message)" "WARN"
+        }
+    }
+
     switch ($GuiMode.ToLowerInvariant()) {
         "streamlit" {
             $entry = Join-Path $PSScriptRoot $StreamlitEntry
@@ -559,6 +571,7 @@ function Start-Gui {
             $procInfo = Start-Logged -Name "gui-streamlit" -FilePath $PythonExe -ArgumentList @("-m", "streamlit", "run", $entry, "--server.port", "8501", "--server.headless", "true")
             Register-ManagedProcess -ProcessInfo $procInfo | Out-Null
             Write-Log "Streamlit UI available at http://127.0.0.1:8501" "SUCCESS"
+            Launch-GuiBrowser -Url "http://127.0.0.1:8501"
         }
         "fastapi" {
             if (Test-Port -TargetHost "127.0.0.1" -Port 8000) {
@@ -567,6 +580,7 @@ function Start-Gui {
             $procInfo = Start-Logged -Name "gui-fastapi" -FilePath $PythonExe -ArgumentList @("-m", "uvicorn", $FastAPIApp, "--host", "127.0.0.1", "--port", "8000", "--reload")
             Register-ManagedProcess -ProcessInfo $procInfo | Out-Null
             Write-Log "FastAPI UI available at http://127.0.0.1:8000" "SUCCESS"
+            Launch-GuiBrowser -Url "http://127.0.0.1:8000"
         }
         "gradio" {
             $entry = Join-Path $PSScriptRoot $GradioEntry
@@ -574,6 +588,7 @@ function Start-Gui {
             $procInfo = Start-Logged -Name "gui-gradio" -FilePath $PythonExe -ArgumentList @($entry)
             Register-ManagedProcess -ProcessInfo $procInfo | Out-Null
             Write-Log "Gradio UI starting (check logs for URL)" "SUCCESS"
+            Launch-GuiBrowser -Url "http://127.0.0.1:7860"
         }
         default {
             throw "Unsupported GuiMode '$GuiMode'. Use streamlit, fastapi, or gradio."
