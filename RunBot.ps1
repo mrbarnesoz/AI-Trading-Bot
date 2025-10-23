@@ -70,13 +70,13 @@ function Write-Log {
 
 function Test-Port {
     param(
-        [Parameter(Mandatory = $true)][string]$Host,
+        [Parameter(Mandatory = $true)][string]$TargetHost,
         [Parameter(Mandatory = $true)][int]$Port,
         [int]$TimeoutMs = 2000
     )
     $client = [System.Net.Sockets.TcpClient]::new()
     try {
-        $async = $client.BeginConnect($Host, $Port, $null, $null)
+        $async = $client.BeginConnect($TargetHost, $Port, $null, $null)
         if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs)) {
             $client.Close()
             return $false
@@ -553,7 +553,7 @@ function Start-Gui {
         "streamlit" {
             $entry = Join-Path $PSScriptRoot $StreamlitEntry
             if (-not (Test-Path $entry)) { throw "Streamlit entry not found at $entry" }
-            if (Test-Port -Host "127.0.0.1" -Port 8501) {
+            if (Test-Port -TargetHost "127.0.0.1" -Port 8501) {
                 Write-Log "Port 8501 already in use; Streamlit may fail to bind." "WARN"
             }
             $procInfo = Start-Logged -Name "gui-streamlit" -FilePath $PythonExe -ArgumentList @("-m", "streamlit", "run", $entry, "--server.port", "8501", "--server.headless", "true")
@@ -561,7 +561,7 @@ function Start-Gui {
             Write-Log "Streamlit UI available at http://127.0.0.1:8501" "SUCCESS"
         }
         "fastapi" {
-            if (Test-Port -Host "127.0.0.1" -Port 8000) {
+            if (Test-Port -TargetHost "127.0.0.1" -Port 8000) {
                 Write-Log "Port 8000 already in use; FastAPI may fail to bind." "WARN"
             }
             $procInfo = Start-Logged -Name "gui-fastapi" -FilePath $PythonExe -ArgumentList @("-m", "uvicorn", $FastAPIApp, "--host", "127.0.0.1", "--port", "8000", "--reload")
