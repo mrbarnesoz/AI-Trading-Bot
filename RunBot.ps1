@@ -4,15 +4,15 @@
     Launcher for the AI-Trading-Bot stack on Windows.
 
     Usage:
-      .\RunBot.ps1           # start services and GUI
-      .\RunBot.ps1 -Debug    # start with verbose logging and live tails
-      .\RunBot.ps1 -Stop     # stop previously started services
+      .\RunBot.ps1              # start services and GUI
+      .\RunBot.ps1 -DebugMode   # start with verbose logging and live tails
+      .\RunBot.ps1 -Stop        # stop previously started services
 #>
 
 [CmdletBinding()]
 param(
     [switch]$Stop,
-    [switch][Alias('debug')]$Debug
+    [switch]$DebugMode
 )
 
 Set-StrictMode -Version Latest
@@ -47,6 +47,7 @@ $script:ServerStarted     = $false
 $script:ShutdownRequested = $false
 $script:CleanupComplete   = $false
 $script:PrefectExe        = "$PSScriptRoot\.venv\Scripts\prefect.exe"
+$script:PipRepairAttempted = $false
 
 # -----------------------------------------------------------------------------
 # Utility Functions
@@ -195,6 +196,88 @@ function Load-DotEnv {
         $key = $pair[0].Trim()
         $value = $pair[1].Trim()
         [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+    }
+}
+
+function Get-SitePackagesPath {
+    $scriptsDir = Split-Path $PythonExe -Parent
+    $venvRoot = Split-Path $scriptsDir -Parent
+    return Join-Path $venvRoot "Lib\site-packages"
+}
+
+function Repair-Pip {
+    param(
+        [bool]$FullReset = $false,
+        [string]$Reason = ""
+    )
+    if ($script:PipRepairAttempted) {
+        return $false
+    }
+    $script:PipRepairAttempted = $true
+    if ($Reason) {
+        Write-Log "Attempting to repair pip installation ($Reason)..." "WARN"
+    } else {
+        Write-Log "Attempting to repair pip installation..." "WARN"
+    }
+    $sitePackages = Get-SitePackagesPath
+    if (-not (Test-Path $sitePackages)) {
+        Write-Log "Site-packages path $sitePackages not found; skipping repair." "WARN"
+        return $false
+    }
+    if ($FullReset) {
+        Write-Log "Performing full pip/site-packages reset..." "WARN"
+        try {
+            Remove-Item -Path $sitePackages -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Log "Failed to remove site-packages: $($_.Exception.Message)" "WARN"
+        }
+    } else {
+        Get-ChildItem -Path $sitePackages -Filter "pip*" -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Log "Failed to remove $($_.FullName): $($_.Exception.Message)" "WARN"
+        }
+    }
+    }
+    if (-not (Test-Path $sitePackages)) {
+        New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
+    }
+    & $PythonExe -m ensurepip --upgrade
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "pip repair completed." "SUCCESS"
+        return $true
+    } else {
+        Write-Log "ensurepip repair step failed (exit $LASTEXITCODE)." "WARN"
+        return $false
+    }
+}
+
+function Invoke-Pip {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+    $attempt = 0
+    while ($attempt -lt 2) {
+        $attempt++
+        $output = & $PythonExe -m pip @Arguments 2>&1
+        $exit = $LASTEXITCODE
+        if ($exit -eq 0) {
+            return ($output | Out-String)
+        }
+        $outputString = ($output | Out-String)
+        Write-Log "$Description failed (attempt $attempt, exit $exit)." "WARN"
+        if (-not $script:PipRepairAttempted -and $outputString -match "RequirementInformation") {
+            if (Repair-Pip -Reason "pip resolver import error detected") {
+                continue
+            }
+        } elseif (-not $script:PipRepairAttempted -and $outputString -match "No module named pip") {
+            if (Repair-Pip -FullReset $true -Reason "pip module missing") {
+                continue
+            }
+        }
+        throw "pip command failed: $Description`n$outputString"
     }
 }
 
@@ -350,12 +433,28 @@ function Initialize-Python {
             }
         }
         Write-Log "Upgrading pip..." "INFO"
-        & $PythonExe -m pip install --upgrade pip
-        if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)" }
+        try {
+            Invoke-Pip -Arguments @("install", "--upgrade", "pip", "--disable-pip-version-check") -Description "pip upgrade"
+        } catch {
+            Write-Log "pip upgrade failed: $($_.Exception.Message). Attempting ensurepip fallback..." "WARN"
+            try {
+                & $PythonExe -m ensurepip --upgrade
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "ensurepip fallback exited with $LASTEXITCODE; continuing with existing pip." "WARN"
+                } else {
+                    Write-Log "ensurepip fallback completed." "SUCCESS"
+                }
+            } catch {
+                Write-Log "ensurepip fallback failed: $($_.Exception.Message). Continuing with existing pip." "WARN"
+            }
+        }
         if (Test-Path $Requirements) {
             Write-Log "Installing dependencies from $Requirements..." "INFO"
-            & $PythonExe -m pip install -r $Requirements
-            if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
+            try {
+                Invoke-Pip -Arguments @("install", "-r", $Requirements) -Description "dependency installation"
+            } catch {
+                throw "Dependency installation failed: $($_.Exception.Message)"
+            }
         } else {
             Write-Log "Requirements file not found; skipping dependency install." "WARN"
         }
@@ -519,7 +618,7 @@ if (Test-Path $StateFile) {
 
 Load-DotEnv -Path $EnvFile
 $env:PREFECT_API_URL = $PREFECT_API_URL
-if ($Debug) {
+if ($DebugMode) {
     $env:PYTHONUNBUFFERED = "1"
     $env:PREFECT_LOGGING_LEVEL = "DEBUG"
 }
@@ -540,7 +639,7 @@ try {
         Write-Log "  prefect deployment run 'bitmex-etl-flow/etl-bitmex'" "INFO"
     }
     Save-RunState
-    if ($Debug) {
+    if ($DebugMode) {
         Start-DebugTails
     }
     Wait-ForShutdown

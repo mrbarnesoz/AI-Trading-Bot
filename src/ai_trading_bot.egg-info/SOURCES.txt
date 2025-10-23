@@ -26,6 +26,9 @@ src/ai_trading_bot/strategies/ml_strategy.py
 src/ai_trading_bot/utils/__init__.py
 src/ai_trading_bot/utils/logging.py
 tests/test_backtesting.py
+tests/test_eval_backtest_engine.py
 tests/test_features.py
+tests/test_live_risk_policy.py
 tests/test_mode_selector.py
 tests/test_strategy.py
+tests/test_training_pipeline.py

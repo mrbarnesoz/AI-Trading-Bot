@@ -15,6 +15,10 @@ Requires-Dist: duckdb>=0.9
 Requires-Dist: httpx>=0.24
 Requires-Dist: polars>=0.20
 Requires-Dist: prefect>=2.14
+Requires-Dist: streamlit>=1.32
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.23
+Requires-Dist: gradio>=4.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.4; extra == "dev"
 Requires-Dist: pytest-cov>=4.1; extra == "dev"
@@ -24,6 +28,8 @@ Requires-Dist: ruff>=0.1.9; extra == "dev"
 # AI Trading Bot
 
 An end-to-end reference implementation of an AI-assisted trading bot. The app provides utilities to download OHLCV data, engineer technical indicator features, train a machine learning classifier, and evaluate the strategy via vectorised backtesting.
+
+> Keep this README up to date whenever you change the bot or its tooling.
 
 ## Key Capabilities
 - Automated data download and caching via `yfinance`.
@@ -62,13 +68,41 @@ An end-to-end reference implementation of an AI-assisted trading bot. The app pr
 3. **Install dependencies**
    ```powershell
    python -m pip install --upgrade pip
-   python -m pip install -e .[dev]
+   python -m pip install -r requirements.txt
    ```
+   (Developers can still use `python -m pip install -e .[dev]` for editable installs.)
 
 4. **(Optional) Configure VS Code**
    - Open the workspace folder in VS Code.
    - Accept the prompt to use the interpreter at `.venv\Scripts\python.exe`.
    - Use the provided tasks (`Terminal > Run Task...`) for training, backtesting, or running tests.
+
+## Flash Up the Bot (Windows Quick Launch)
+For everyday use on Windows, the `RunBot` scripts start everything (Prefect server, worker/agent, and the chosen GUI) and shut it down again.
+
+1. Install PowerShell 7+ and Python 3.11 if you have not already.
+2. From the repo root, double-click `RunBot.bat` or run it in a terminal:
+   ```powershell
+   .\RunBot.bat
+   ```
+   The script will build the virtual environment, deploy Prefect flows, and launch the default Streamlit UI at http://127.0.0.1:8501.
+   - If PowerShell 7 is missing you will see a message telling you to install it before the window closes.
+3. To stop all services, run:
+   ```powershell
+   .\RunBot.ps1 -Stop
+   ```
+4. Optional extras:
+   - `.\RunBot.ps1 -DebugMode` streams live log tails and enables verbose Prefect logging.
+   - Set `GuiMode` inside `RunBot.ps1` to `streamlit`, `fastapi`, or `gradio` (default is Streamlit).
+   - Logs are written under `logs\` with one file per service; the GUIs read from the same directory.
+   - If `prefect.yaml` is missing, run `python prefect_deployments.py` once so RunBot can register deployments automatically.
+
+Update this section whenever you add new services, ports, or environment requirements so day-to-day operators always have the latest steps.
+
+### GUI Options
+- **Streamlit (`ui/app.py`)** – browser control center with log viewer, QC summary, and ready-made command snippets.
+- **FastAPI (`orchestration/api.py`)** – lightweight API for health checks and log tails. RunBot starts it via `uvicorn` when `GuiMode` is set to `fastapi`.
+- **Gradio (`ui/gradio_app.py`)** – alternative web UI focused on log browsing. Launches when `GuiMode` is `gradio`.
 
 ## Usage
 Run all commands from the project root with your virtual environment activated.
@@ -154,7 +188,7 @@ Stage 3 scaffolding introduces model stacks per regime:
 These stubs hook into MLflow for experiment tracking and will be extended with full data loaders and evaluation logic as Stage 3 is completed.
 
 ## Evaluation & Simulation
-Stage 4 adds the evaluation toolkit:
+Stage 4 - Backtesting & Evaluation toolkit:
 
 - `eval/backtest_engine.py`: vectorized backtester with configurable BitMEX cost models.
 - `eval/costs.py`: taker/slippage/latency cost model utilities.
@@ -176,6 +210,46 @@ Stage 5 introduces the embedded agent skeleton:
 
 These modules set the stage for wiring BitMEX APIs, latency watchdogs, and the maker-first strategy thresholds defined in Stage 5.
 
+## Stage 3 - Walk-Forward Model Training
+Gold datasets in `data/gold/` feed the LightGBM walk-forward trainer (`training/walkforward.py`) and the HFT TCN rolling loop (`training/rolling_hft.py`). Launch end-to-end training per regime with:
+
+```powershell
+python jobs/train_models.py --gold-root data/gold --regimes intraday swing hft --symbols XBTUSD
+```
+
+- Walk-forward folds log Sharpe/Calmar/Brier scores plus feature importances to MLflow; calibrators serialise alongside the model artifacts.
+- HFT windows train the Lightning TCN with latency-friendly sequence sampling; metrics capture long/short Sharpe.
+- Synthetic fixtures live in `tests/test_training_pipeline.py` (skipped automatically if MLflow is not installed).
+
+## Stage 4 - Backtesting & Evaluation
+`eval/backtest_engine.py` now simulates maker-first execution, turnover, and latency offsets. Combine it with the cost model to produce production-grade tear-downs:
+
+```python
+from pathlib import Path
+from eval.backtest_engine import BacktestConfig, run_backtest, save_results
+from eval.costs import CostModel
+
+metrics, portfolio, trades = run_backtest(
+    features_df,
+    probabilities,
+    realised_returns,
+    CostModel(taker_fee_bps=2.5, slippage_bps=1.0),
+    BacktestConfig(regime="intraday", long_threshold=0.60, short_threshold=0.60, cross_threshold=0.75),
+)
+save_results(metrics, trades, Path("results/intraday_backtest"))
+```
+
+The `metrics` payload includes Sharpe, Sortino, Calmar, max drawdown, hit rate, profit factor, and turnover. See `tests/test_eval_backtest_engine.py` for end-to-end coverage.
+
+## Stage 5 - Live Agent, Risk Controls, and Persistence
+`live/policy/decision.py` produces structured `Decision` objects (side, size, confidence, cross-spread trigger, and target exposure). Risk is enforced through:
+
+- `live/state/positions.py`: multi-sub-position manager per symbol.
+- `live/risk/guardrails.py`: leverage caps, ATR-based liquidation buffers, and daily loss kill switches.
+- `live/state/checkpoint.py`: JSON persistence for positions + risk state, restoring automatically on boot.
+
+Tests under `tests/test_live_risk_policy.py` validate both decision logic and guard rails.
+
 ## Deployment & Operations
 Stage 6 scaffolding covers rollout, monitoring, and maintenance:
 
@@ -183,6 +257,17 @@ Stage 6 scaffolding covers rollout, monitoring, and maintenance:
 - `deployment/monitoring.py`: alert registration/evaluation hooks.
 - `reports/daily_report.py`: daily PnL/latency/drift report generator.
 - `maintenance/retrain_scheduler.py`: cadence-aware retrain scheduler.
+
+Operational glue:
+
+- Register Prefect deployments with `python prefect_deployments.py`, start a worker on the `bitmex` process pool, then trigger runs via `prefect deployment run bitmex-daily-flow/daily-bitmex`.
+- Launch the embedded live agent once evaluation gates clear:
+
+  ```powershell
+  python deployment/live_agent_runner.py --config conf/live_agent.yaml --api-client live.execution.bitmex_client:BitmexClient --checkpoint data/checkpoints/live_state.json
+  ```
+
+  The YAML config declares symbols/regimes, threshold overrides, and risk limits. State is checkpointed automatically for crash recovery.
 
 Dashboards and alerts will integrate here to enforce readiness gates before moving between deployment phases.
 
@@ -272,3 +357,9 @@ prefect deployment run 'bitmex-qc-flow'
 ```
 
 Prefect blocks (e.g. S3, BitMEX credentials) can be registered via `prefect block register --file blocks/bitmex_blocks.py` when extending to managed secrets.
+To scaffold sample Prefect blocks locally:
+```powershell
+python blocks/register_blocks.py
+```
+
+Set `APPRISE_URLS` or register the `alert-webhooks` secret block with one or more Apprise URLs (Slack, email, etc.) so alerts fire when QC or pipeline checks fail.

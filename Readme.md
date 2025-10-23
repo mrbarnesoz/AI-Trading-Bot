@@ -41,8 +41,9 @@ An end-to-end reference implementation of an AI-assisted trading bot. The app pr
 3. **Install dependencies**
    ```powershell
    python -m pip install --upgrade pip
-   python -m pip install -e .[dev]
+   python -m pip install -r requirements.txt
    ```
+   (Developers can still use `python -m pip install -e .[dev]` for editable installs.)
 
 4. **(Optional) Configure VS Code**
    - Open the workspace folder in VS Code.
@@ -58,16 +59,24 @@ For everyday use on Windows, the `RunBot` scripts start everything (Prefect serv
    .\RunBot.bat
    ```
    The script will build the virtual environment, deploy Prefect flows, and launch the default Streamlit UI at http://127.0.0.1:8501.
+   - If PowerShell 7 is missing you will see a message telling you to install it before the window closes.
 3. To stop all services, run:
    ```powershell
    .\RunBot.ps1 -Stop
    ```
 4. Optional extras:
-   - `.\RunBot.ps1 -Debug` streams live log tails and enables verbose Prefect logging.
-   - Set `GuiMode` inside `RunBot.ps1` to `fastapi` or `gradio` if you prefer a different interface.
-   - Logs are written under `logs\` with one file per service; inspect them if something fails.
+   - `.\RunBot.ps1 -DebugMode` streams live log tails and enables verbose Prefect logging.
+   - Set `GuiMode` inside `RunBot.ps1` to `streamlit`, `fastapi`, or `gradio` (default is Streamlit).
+   - Logs are written under `logs\` with one file per service; the GUIs read from the same directory.
+   - If `prefect.yaml` is missing, run `python prefect_deployments.py` once so RunBot can register deployments automatically.
+   - The Streamlit Control Center exposes Overview, Pipelines, Model & Backtesting, Live Trading, Logs, and Settings tabs with live summaries.
 
 Update this section whenever you add new services, ports, or environment requirements so day-to-day operators always have the latest steps.
+
+### GUI Options
+- **Streamlit (`ui/app.py`)**: dashboard control center with log viewer, QC summary, and operational panels.
+- **FastAPI (`orchestration/api.py`)**: lightweight API for health checks and log tails. RunBot starts it via `uvicorn` when `GuiMode` is set to `fastapi`.
+- **Gradio (`ui/gradio_app.py`)**: alternative web UI focused on log browsing. Launches when `GuiMode` is `gradio`.
 
 ## Usage
 Run all commands from the project root with your virtual environment activated.

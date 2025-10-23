@@ -8,6 +8,10 @@ duckdb>=0.9
 httpx>=0.24
 polars>=0.20
 prefect>=2.14
+streamlit>=1.32
+fastapi>=0.110
+uvicorn[standard]>=0.23
+gradio>=4.0
 
 [dev]
 pytest>=7.4
