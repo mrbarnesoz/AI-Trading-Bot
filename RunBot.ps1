@@ -632,8 +632,18 @@ if ($Stop) {
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
 
 if (Test-Path $StateFile) {
-    Write-Log "Existing RunBot state detected. Use -Stop before starting again." "ERROR"
-    throw "Aborting to avoid duplicate launches."
+    Write-Log "Existing RunBot state detected; attempting automatic stop before restart." "WARN"
+    try {
+        Stop-RunBotFromState
+        Start-Sleep -Seconds 2
+    } catch {
+        Write-Log "Automatic stop failed: $($_.Exception.Message)" "ERROR"
+        throw "Aborting to avoid duplicate launches."
+    }
+    if (Test-Path $StateFile) {
+        Write-Log "State file still present after stop attempt; aborting launch to avoid duplicates." "ERROR"
+        throw "Aborting to avoid duplicate launches."
+    }
 }
 
 Load-DotEnv -Path $EnvFile
