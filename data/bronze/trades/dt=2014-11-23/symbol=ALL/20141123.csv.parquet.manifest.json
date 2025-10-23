@@ -2,6 +2,6 @@
   "path": "data\\bronze\\trades\\dt=2014-11-23\\symbol=ALL\\20141123.csv.parquet",
   "rows": 2,
   "bytes": 2684,
-  "ingested_at": "2025-10-22T11:56:19.022903+00:00",
+  "ingested_at": "2025-10-23T03:47:54.483642+00:00",
   "source": "data\\raw\\trade\\dt=2014-11-23\\20141123.csv.gz"
 }

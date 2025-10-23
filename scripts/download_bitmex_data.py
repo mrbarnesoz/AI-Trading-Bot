@@ -17,12 +17,15 @@ import io
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional
+from typing import Iterable, Iterator, List, Optional, Sequence
 
 import polars as pl
 import requests
 
-BASE_URL = "https://public.bitmex.com/data"
+BASE_URLS = [
+    "https://s3-eu-west-1.amazonaws.com/public.bitmex.com/data",
+    "https://public.bitmex.com/data",
+]
 VALID_DATASETS = {"trade", "quote"}
 
 
@@ -34,14 +37,42 @@ def iter_dates(start: date, end: date) -> Iterator[date]:
         current += step
 
 
-def candidate_urls(dataset: str, symbol: str, day: date) -> List[str]:
-    day_str = day.isoformat()
-    return [
-        f"{BASE_URL}/{dataset}/{symbol}/{day_str}.csv.gz",
-        f"{BASE_URL}/{dataset}/{day_str}.csv.gz",
-        f"{BASE_URL}/{dataset}/{symbol}/{day_str}.json.gz",
-        f"{BASE_URL}/{dataset}/{day_str}.json.gz",
-    ]
+def candidate_urls(dataset: str, day: date, symbols: Optional[Sequence[str]] = None) -> List[str]:
+    """Return potential archive URLs for a dataset/day combination.
+
+    BitMEX stores archives in YYYYMMDD format but some historical mirrors
+    include ISO dates. We try both along with CSV/JSON variants.
+    """
+    day_iso = day.isoformat()
+    day_compact = day.strftime("%Y%m%d")
+    urls: List[str] = []
+    for base in BASE_URLS:
+        urls.extend(
+            [
+                f"{base}/{dataset}/{day_iso}.csv.gz",
+                f"{base}/{dataset}/{day_compact}.csv.gz",
+                f"{base}/{dataset}/{day_iso}.json.gz",
+                f"{base}/{dataset}/{day_compact}.json.gz",
+            ]
+        )
+        if symbols:
+            for symbol in symbols:
+                urls.extend(
+                    [
+                        f"{base}/{dataset}/{symbol}/{day_iso}.csv.gz",
+                        f"{base}/{dataset}/{symbol}/{day_compact}.csv.gz",
+                        f"{base}/{dataset}/{symbol}/{day_iso}.json.gz",
+                        f"{base}/{dataset}/{symbol}/{day_compact}.json.gz",
+                    ]
+                )
+    # Preserve order while dropping duplicates.
+    seen = set()
+    deduped = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
 
 
 def download_file(urls: Iterable[str], timeout: float = 30.0) -> Optional[bytes]:
@@ -74,7 +105,11 @@ def parse_to_dataframe(data: bytes) -> pl.DataFrame:
             .cast(pl.Utf8)
             .str.replace("D", " ")
             .str.replace("Z", "")
-            .strptime(pl.Datetime(time_unit="us", time_zone="UTC"), format="%Y-%m-%d %H:%M:%S%.f", strict=False)
+            .str.strptime(
+                pl.Datetime(time_unit="us", time_zone="UTC"),
+                format="%Y-%m-%d %H:%M:%S%.f",
+                strict=False,
+            )
         )
     return df
 
@@ -118,24 +153,38 @@ def write_parquet(df: pl.DataFrame, output_path: Path) -> None:
     logging.info("Wrote %s (%d rows)", output_path, df.height)
 
 
-def process_day(dataset: str, symbol: str, day: date, output_root: Path, skip_existing: bool = True) -> None:
-    rel_path = Path(dataset) / f"dt={day.isoformat()}" / f"symbol={symbol}" / "data.parquet"
-    output_path = output_root / rel_path
-    if skip_existing and output_path.exists():
-        logging.info("Skipping existing %s", output_path)
+def process_day(dataset: str, symbols: List[str], day: date, output_root: Path, skip_existing: bool = True) -> None:
+    day_dir = Path(dataset) / f"dt={day.isoformat()}"
+    outputs = {
+        symbol: output_root / day_dir / f"symbol={symbol}" / "data.parquet" for symbol in symbols
+    }
+
+    if skip_existing and all(path.exists() for path in outputs.values()):
+        logging.info("Skipping %s %s (all symbols exist)", dataset, day)
         return
 
-    data = download_file(candidate_urls(dataset, symbol, day))
+    data = download_file(candidate_urls(dataset, day, symbols))
     if data is None:
-        logging.warning("No data found for %s %s %s", dataset, symbol, day)
+        logging.warning("No archive found for %s %s", dataset, day)
         return
 
     df = parse_to_dataframe(data)
     if df.is_empty():
-        logging.warning("Empty dataset for %s %s %s", dataset, symbol, day)
+        logging.warning("Archive empty for %s %s", dataset, day)
         return
     df = normalise_for_dataset(dataset, df)
-    write_parquet(df, output_path)
+
+    for symbol, output_path in outputs.items():
+        if skip_existing and output_path.exists():
+            logging.info("Skipping existing %s", output_path)
+            continue
+
+        symbol_df = df.filter(pl.col("symbol") == symbol)
+        if symbol_df.is_empty():
+            logging.warning("No data found for %s %s %s", dataset, symbol, day)
+            continue
+        logging.info("Writing %d rows for %s %s %s", symbol_df.height, dataset, symbol, day)
+        write_parquet(symbol_df, output_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -170,10 +219,9 @@ def main() -> None:
 
     for dataset in args.datasets:
         logging.info("=== Dataset: %s ===", dataset)
-        for symbol in args.symbols:
-            logging.info("--- Symbol: %s ---", symbol)
-            for day in iter_dates(start_date, end_date):
-                process_day(dataset, symbol, day, output_root, skip_existing=args.skip_existing)
+        for day in iter_dates(start_date, end_date):
+            logging.info("--- Day: %s ---", day)
+            process_day(dataset, args.symbols, day, output_root, skip_existing=args.skip_existing)
 
 
 if __name__ == "__main__":

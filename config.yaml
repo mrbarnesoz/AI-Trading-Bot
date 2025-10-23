@@ -1,5 +1,5 @@
 data:
-  symbol: "AAPL"
+  symbol: "BTC-USD"
   start_date: "2018-01-01"
   end_date: null
   interval: "1d"

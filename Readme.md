@@ -2,6 +2,8 @@
 
 An end-to-end reference implementation of an AI-assisted trading bot. The app provides utilities to download OHLCV data, engineer technical indicator features, train a machine learning classifier, and evaluate the strategy via vectorised backtesting.
 
+> Keep this README up to date whenever you change the bot or its tooling.
+
 ## Key Capabilities
 - Automated data download and caching via `yfinance`.
 - Technical indicator feature engineering (SMA, EMA, RSI, MACD, volatility, volume).
@@ -46,6 +48,26 @@ An end-to-end reference implementation of an AI-assisted trading bot. The app pr
    - Open the workspace folder in VS Code.
    - Accept the prompt to use the interpreter at `.venv\Scripts\python.exe`.
    - Use the provided tasks (`Terminal > Run Task...`) for training, backtesting, or running tests.
+
+## Flash Up the Bot (Windows Quick Launch)
+For everyday use on Windows, the `RunBot` scripts start everything (Prefect server, worker/agent, and the chosen GUI) and shut it down again.
+
+1. Install PowerShell 7+ and Python 3.11 if you have not already.
+2. From the repo root, double-click `RunBot.bat` or run it in a terminal:
+   ```powershell
+   .\RunBot.bat
+   ```
+   The script will build the virtual environment, deploy Prefect flows, and launch the default Streamlit UI at http://127.0.0.1:8501.
+3. To stop all services, run:
+   ```powershell
+   .\RunBot.ps1 -Stop
+   ```
+4. Optional extras:
+   - `.\RunBot.ps1 -Debug` streams live log tails and enables verbose Prefect logging.
+   - Set `GuiMode` inside `RunBot.ps1` to `fastapi` or `gradio` if you prefer a different interface.
+   - Logs are written under `logs\` with one file per service; inspect them if something fails.
+
+Update this section whenever you add new services, ports, or environment requirements so day-to-day operators always have the latest steps.
 
 ## Usage
 Run all commands from the project root with your virtual environment activated.
