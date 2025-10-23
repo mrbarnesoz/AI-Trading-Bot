@@ -432,31 +432,36 @@ function Initialize-Python {
                 Pop-Location
             }
         }
-        Write-Log "Upgrading pip..." "INFO"
+        Push-Location -Path $PSScriptRoot
         try {
-            Invoke-Pip -Arguments @("install", "--upgrade", "pip", "--disable-pip-version-check") -Description "pip upgrade"
-        } catch {
-            Write-Log "pip upgrade failed: $($_.Exception.Message). Attempting ensurepip fallback..." "WARN"
+            Write-Log "Upgrading pip..." "INFO"
             try {
-                & $PythonExe -m ensurepip --upgrade
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Log "ensurepip fallback exited with $LASTEXITCODE; continuing with existing pip." "WARN"
-                } else {
-                    Write-Log "ensurepip fallback completed." "SUCCESS"
+                Invoke-Pip -Arguments @("install", "--upgrade", "pip", "--disable-pip-version-check") -Description "pip upgrade"
+            } catch {
+                Write-Log "pip upgrade failed: $($_.Exception.Message). Attempting ensurepip fallback..." "WARN"
+                try {
+                    & $PythonExe -m ensurepip --upgrade
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Log "ensurepip fallback exited with $LASTEXITCODE; continuing with existing pip." "WARN"
+                    } else {
+                        Write-Log "ensurepip fallback completed." "SUCCESS"
+                    }
+                } catch {
+                    Write-Log "ensurepip fallback failed: $($_.Exception.Message). Continuing with existing pip." "WARN"
                 }
-            } catch {
-                Write-Log "ensurepip fallback failed: $($_.Exception.Message). Continuing with existing pip." "WARN"
             }
-        }
-        if (Test-Path $Requirements) {
-            Write-Log "Installing dependencies from $Requirements..." "INFO"
-            try {
-                Invoke-Pip -Arguments @("install", "-r", $Requirements) -Description "dependency installation"
-            } catch {
-                throw "Dependency installation failed: $($_.Exception.Message)"
+            if (Test-Path $Requirements) {
+                Write-Log "Installing dependencies from $Requirements..." "INFO"
+                try {
+                    Invoke-Pip -Arguments @("install", "-r", $Requirements) -Description "dependency installation"
+                } catch {
+                    throw "Dependency installation failed: $($_.Exception.Message)"
+                }
+            } else {
+                Write-Log "Requirements file not found; skipping dependency install." "WARN"
             }
-        } else {
-            Write-Log "Requirements file not found; skipping dependency install." "WARN"
+        } finally {
+            Pop-Location
         }
     }
     if (-not (Test-Path $PythonExe)) {
