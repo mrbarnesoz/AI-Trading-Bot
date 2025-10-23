@@ -557,7 +557,7 @@ function Start-Gui {
             Start-Process $Url | Out-Null
             Write-Log "Opening browser at $Url" "INFO"
         } catch {
-            Write-Log "Unable to launch browser for $Url: $($_.Exception.Message)" "WARN"
+            Write-Log ("Unable to launch browser for {0}: {1}" -f $Url, $_.Exception.Message) "WARN"
         }
     }
 
