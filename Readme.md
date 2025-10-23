@@ -31,6 +31,7 @@ An end-to-end reference implementation of an AI-assisted trading bot. The app pr
    - Python 3.10+ (recommended 3.11 for best library support)
    - pip
    - (Optional) Git for version control
+   - Recommended: place the project in `C:\AI_trading_Bot` (short path avoids Windows MAX_PATH issues)
 
 2. **Create a virtual environment**
    ```powershell
