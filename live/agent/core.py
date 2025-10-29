@@ -10,6 +10,7 @@ from typing import Dict, Optional
 from live.execution.order_router import OrderRouter
 from live.policy.decision import DecisionPolicy
 from live.risk.guardrails import RiskGuardrails
+from live.risk.trailing import TrailingManager
 from live.state.checkpoint import StateCheckpoint
 
 logger = logging.getLogger(__name__)
@@ -31,12 +32,14 @@ class EmbeddedAgent:
         risk: RiskGuardrails,
         router: OrderRouter,
         checkpoint: StateCheckpoint,
+        trailing: TrailingManager | None = None,
     ) -> None:
         self.symbols = symbols
         self.policy = policy
         self.risk = risk
         self.router = router
         self.checkpoint = checkpoint
+        self.trailing = trailing
         self._tasks: Dict[str, asyncio.Task] = {}
         self.checkpoint.bind(self.risk)
         self.checkpoint.load()
@@ -50,9 +53,16 @@ class EmbeddedAgent:
         logger.info("Starting loop for %s", symbol)
         while True:
             market_state = await self.router.fetch_market_state(symbol)
+            if self.trailing and self.trailing.enabled():
+                trail_events = self.trailing.update(symbol, market_state)
+                for event in trail_events:
+                    if self.risk.is_allowed(symbol, event, market_state):
+                        await self.router.execute(symbol, event, market_state)
             decision = self.policy.decide(symbol, market_state)
             if self.risk.is_allowed(symbol, decision, market_state):
-                await self.router.execute(symbol, decision)
+                await self.router.execute(symbol, decision, market_state)
             if self.risk.should_checkpoint():
                 await self.checkpoint.persist()
+                if self.trailing:
+                    self.trailing.flush()
             await asyncio.sleep(DecisionPolicy.sampling_interval(cfg.regime))

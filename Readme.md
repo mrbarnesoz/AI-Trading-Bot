@@ -228,7 +228,7 @@ Tests under `tests/test_live_risk_policy.py` validate both decision logic and gu
 ## Deployment & Operations
 Stage 6 scaffolding covers rollout, monitoring, and maintenance:
 
-- `deployment/phases.py`: phased rollout plan (dry run → shadow → canary → expansion → full).
+- `deployment/phases.py`: phased rollout plan (dry run ? shadow ? canary ? expansion ? full).
 - `deployment/monitoring.py`: alert registration/evaluation hooks.
 - `reports/daily_report.py`: daily PnL/latency/drift report generator.
 - `maintenance/retrain_scheduler.py`: cadence-aware retrain scheduler.
@@ -297,6 +297,33 @@ pipeline:
 
 CLI overrides such as `--long-threshold` or `--short-threshold` tighten the outer band without touching deeper tiers.
 
+## Funding-Aware Meta Selector
+The meta selector (`ai_trading_bot.meta.select.MetaStrategySelector`) now evaluates every model tick before routing orders. Scores come from `meta_selector.yaml`, making it easy to retune weights without code changes.
+
+### What the selector enforces
+- Chooses among S1 trend, S2 VWAP reversion, S3 funding/OI contrarian, S4 microstructure, or the flat S5 fallback.
+- Auto-flattens when liquidity buffer < 5x ATR, latency watchdog fires, daily PnL is down more than 10%, or leverage already sits at the regime cap (5x HFT, 3x intraday, 2x swing).
+- Blocks longs when funding is richly positive and ADX signals trend strength, and blocks shorts during deeply negative funding.
+- Scales size by funding intensity (keeps at least 25% of the base size) and caps S2 in high-trend environments.
+- Defaults to maker orders, only crosses the spread once confidence clears the regime-specific `theta_high` threshold.
+
+### Configuration quick reference
+- Edit `meta_selector.yaml` to tweak weights, thresholds, or sizing bands. Call `MetaStrategySelector.reload()` to apply without restarting.
+- Decisions stream to `results/meta_decisions/<date>.parquet` and, if MLflow is configured, also land under the `meta_selector/` artifact namespace.
+- Unit coverage lives in `tests/test_meta_selector.py` (`pytest tests/test_meta_selector.py`).
+
+
+
+## Volatility Trailing Controls
+Trailing stops and take-profits are now driven by ATR with regime-specific multipliers. The Streamlit UI (Settings → Trailing Stops & Take-Profit) exposes toggle switches and numeric inputs so you can enable/disable trailing per regime and adjust `k_atr` multipliers without editing YAML.
+
+- Global enable switch plus per-regime stop/take ATR sliders.
+- `min_lock` R-multiple guard ensures stops only trail once trades are profitable (default configurable).
+- Slippage guard (bps) and max update rate protect against tape churn; both adjustable in the UI.
+- Changes persist to `config.yaml` via the "Save Trailing Settings" action and are picked up automatically by RunBot/live agent.
+
+Telemetry note: trailing update events write JSONL files under `results/trailing_decisions/`; each record captures symbol, regime, multipliers, and rationale. Use these logs (or MLflow snapshots) to audit how often TSL/TTP events trim exposure.
+
 ## Extending the Bot
 - Swap in alternative models by modifying `src/ai_trading_bot/models/predictor.py`.
 - Add new indicators to `features/indicators.py` and list them in `config.yaml`.
@@ -338,3 +365,4 @@ python blocks/register_blocks.py
 ```
 
 Set `APPRISE_URLS` or register the `alert-webhooks` secret block with one or more Apprise URLs (Slack, email, etc.) so alerts fire when QC or pipeline checks fail.
+

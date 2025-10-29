@@ -3,6 +3,8 @@ pyproject.toml
 src/ai_trading_bot/__init__.py
 src/ai_trading_bot/__main__.py
 src/ai_trading_bot/config.py
+src/ai_trading_bot/data_pipeline.py
+src/ai_trading_bot/modes_pipeline.py
 src/ai_trading_bot/pipeline.py
 src/ai_trading_bot.egg-info/PKG-INFO
 src/ai_trading_bot.egg-info/SOURCES.txt
@@ -19,6 +21,8 @@ src/ai_trading_bot/evaluation/__init__.py
 src/ai_trading_bot/evaluation/metrics.py
 src/ai_trading_bot/features/__init__.py
 src/ai_trading_bot/features/indicators.py
+src/ai_trading_bot/meta/__init__.py
+src/ai_trading_bot/meta/select.py
 src/ai_trading_bot/models/__init__.py
 src/ai_trading_bot/models/predictor.py
 src/ai_trading_bot/strategies/__init__.py
@@ -29,6 +33,8 @@ tests/test_backtesting.py
 tests/test_eval_backtest_engine.py
 tests/test_features.py
 tests/test_live_risk_policy.py
+tests/test_meta_selector.py
 tests/test_mode_selector.py
 tests/test_strategy.py
+tests/test_trailing.py
 tests/test_training_pipeline.py

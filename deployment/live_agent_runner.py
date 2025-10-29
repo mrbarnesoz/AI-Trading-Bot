@@ -15,7 +15,9 @@ from live.agent.core import EmbeddedAgent, SymbolConfig
 from live.execution.order_router import OrderRouter
 from live.policy.decision import DecisionPolicy, Thresholds
 from live.risk.guardrails import RiskGuardrails, RiskLimits
+from live.risk.trailing import TrailingManager
 from live.state.checkpoint import StateCheckpoint
+from ai_trading_bot.config import TrailingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,12 @@ async def run_agent(args: argparse.Namespace) -> None:
     symbols_cfg = build_symbols(config.get("symbols", []))
     thresholds = build_thresholds(config.get("thresholds"))
     risk_limits = build_risk_limits(config.get("risk_limits"))
+    trailing_cfg_dict = (
+        config.get("risk", {}).get("trailing")
+        or config.get("trailing")
+        or {}
+    )
+    trailing_cfg = TrailingConfig(**trailing_cfg_dict)
 
     api_client_cls = _import_api_client(args.api_client)
     api_settings = config.get("api", {})
@@ -107,9 +115,10 @@ async def run_agent(args: argparse.Namespace) -> None:
 
     policy = DecisionPolicy(thresholds)
     risk = RiskGuardrails(risk_limits)
-    router = OrderRouter(api_client)
+    trailing_manager = TrailingManager(trailing_cfg, risk.positions)
+    router = OrderRouter(api_client, trailing_manager=trailing_manager)
     checkpoint = StateCheckpoint(args.checkpoint, risk=risk)
-    agent = EmbeddedAgent(symbols_cfg, policy, risk, router, checkpoint)
+    agent = EmbeddedAgent(symbols_cfg, policy, risk, router, checkpoint, trailing=trailing_manager)
 
     await agent.start()
     if agent._tasks:

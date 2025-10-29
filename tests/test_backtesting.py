@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ai_trading_bot.backtesting.simulator import run_backtest
-from ai_trading_bot.config import BacktestConfig
+from ai_trading_bot.config import BacktestConfig, TrailingConfig
 
 
 def make_price_series(length: int = 50) -> pd.DataFrame:
@@ -23,7 +23,8 @@ def test_run_backtest_produces_equity_curve():
     signals = pd.Series(1, index=prices.index, name="signal")
     config = BacktestConfig(initial_capital=10000, transaction_cost=0.0)
 
-    result = run_backtest(prices, signals, config)
+    trailing = TrailingConfig(enabled=False)
+    result = run_backtest(prices, signals, config, trailing_cfg=trailing, symbol="TEST", regime="intraday")
 
     assert "allocation" in result.performance.columns
     assert result.summary["final_equity"] >= config.initial_capital * 0.9
@@ -35,7 +36,8 @@ def test_run_backtest_supports_short_positions():
     signals = pd.Series(-1, index=prices.index, name="signal")
     config = BacktestConfig(initial_capital=10000, transaction_cost=0.0)
 
-    result = run_backtest(prices, signals, config)
+    trailing = TrailingConfig(enabled=False)
+    result = run_backtest(prices, signals, config, trailing_cfg=trailing, symbol="TEST", regime="intraday")
 
     assert result.summary["final_equity"] >= config.initial_capital
     assert (result.performance["position"] <= 0).all()

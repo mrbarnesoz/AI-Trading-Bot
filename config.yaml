@@ -1,9 +1,9 @@
 data:
-  symbol: "XBTUSD"
+  symbol: "BTC-USD"
   start_date: "2018-01-01"
   end_date: null
-  interval: "1h"
-  source: "bitmex"
+  interval: "1d"
+  source: "yfinance"
   cache_dir: "data/raw"
 features:
   indicators: ["sma", "ema", "rsi", "macd"]
@@ -28,6 +28,34 @@ backtest:
   position_capital_fraction: 0.1
   max_total_capital_fraction: 0.5
   max_position_units: 3
+risk:
+  trailing:
+    enabled: true
+    update:
+      HFT:
+        snapshots: 4
+      intraday:
+        on_bar_close: true
+      swing:
+        on_bar_close: true
+    k_atr:
+      stop:
+        HFT: 2.0
+        intraday: 3.0
+        swing: 4.0
+      take:
+        HFT: 1.0
+        intraday: 1.5
+        swing: 2.0
+    min_lock:
+      R_multiple: 1.0
+    floor_ceiling:
+      long:
+        min_px_distance_ticks: 1
+      short:
+        min_px_distance_ticks: 1
+    slippage_guard_bps: 5
+    max_updates_per_min: 60
 pipeline:
   lookahead: 1
   target_column: "target_return"

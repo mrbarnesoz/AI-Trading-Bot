@@ -44,6 +44,15 @@ class MarketState:
     price: float = 0.0
     lot_size: float = 1.0
     account: Optional[AccountState] = None
+    high: float = 0.0
+    low: float = 0.0
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    spread_bps: float = 0.0
+    latency_ok: bool = True
+    bar_closed: bool = True
+    tick_size: float = 1.0
+    mid_price: Optional[float] = None
 
 
 @dataclass

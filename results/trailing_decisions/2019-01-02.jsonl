@@ -1,0 +1,1 @@
+{"ts": "2019-01-02T00:00:00+00:00", "symbol": "BTC-USD-short", "sub_id": "BTC-USD-short", "direction": "short", "regime": "swing", "best_price": 3943.409423828125, "atr": 207.5970318691349, "stop_before": null, "stop_after": 4773.797551304665, "take_before": null, "take_after": 4358.6034875663945, "r_multiple": 0.0, "reason": "seed"}

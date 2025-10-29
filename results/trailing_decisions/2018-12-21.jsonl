@@ -1,0 +1,1 @@
+{"ts": "2018-12-21T00:00:00+00:00", "symbol": "BTC-USD-long", "sub_id": "BTC-USD-long", "direction": "long", "regime": "swing", "best_price": 3896.543701171875, "atr": 251.62512946688346, "stop_before": null, "stop_after": 2890.0431833043413, "take_before": null, "take_after": 3393.293442238108, "r_multiple": 0.0, "reason": "seed"}

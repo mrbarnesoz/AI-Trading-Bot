@@ -1,0 +1,21 @@
+{
+  "mode": "swing",
+  "mode_score": 2.162508259791274,
+  "mode_metrics": {
+    "score": 2.162508259791274,
+    "volatility": 0.005163266252916177,
+    "trend_strength": 0.061004619748908646,
+    "liquidity": 20.72971179140469
+  },
+  "summary": {
+    "total_return": 0.13316838312047796,
+    "annualised_return": 0.02221272711596045,
+    "annualised_volatility": 0.009076963678267947,
+    "sharpe_ratio": 1.3454639182042938,
+    "win_rate": 0.20850767085076707,
+    "max_drawdown": -0.005128529000759552,
+    "final_equity": 11331.68383120478,
+    "average_capital_fraction": 0.06248256624825662
+  },
+  "generated_at": "2025-10-23T10:10:05.635598+00:00"
+}

@@ -1,0 +1,16 @@
+{
+  "mode": "1d",
+  "mode_score": null,
+  "mode_metrics": {},
+  "summary": {
+    "total_return": 0.41563722989225416,
+    "annualised_return": 0.03127737871177616,
+    "annualised_volatility": 0.016046413800357352,
+    "sharpe_ratio": 1.3259896557885298,
+    "win_rate": 0.05555555555555555,
+    "max_drawdown": -0.011708254390941697,
+    "final_equity": 14156.37229892254,
+    "average_capital_fraction": 0.006399437412095641
+  },
+  "generated_at": "2025-10-29T21:51:57.417610+00:00"
+}

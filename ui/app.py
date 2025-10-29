@@ -1,31 +1,36 @@
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
+import pandas as pd
 import streamlit as st
-import yaml
+
+from ai_trading_bot.config import load_config, save_config
+from ai_trading_bot.pipeline import prepare_dataset, train as pipeline_train, backtest as pipeline_backtest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 LOG_ROOT = PROJECT_ROOT / "logs"
 RESULTS_ROOT = PROJECT_ROOT / "results"
 MODELS_ROOT = PROJECT_ROOT / "models"
+HISTORY_ROOT = RESULTS_ROOT / "history"
+TRAIN_HISTORY_DIR = MODELS_ROOT / "history"
+BACKTEST_HISTORY_DIR = HISTORY_ROOT / "backtests"
+LATEST_MODEL_METADATA = MODELS_ROOT / "latest_metadata.json"
+LATEST_BACKTEST_FILE = RESULTS_ROOT / "backtest_results.json"
 STATE_FILE = LOG_ROOT / "runbot-state.json"
-OPEN_TRADES_FILE = RESULTS_ROOT / "open_trades.json"
-DRIFT_FILE = RESULTS_ROOT / "drift_report.json"
-BACKTEST_FILE = RESULTS_ROOT / "backtest_results.json"
-TRAINING_META_FILE = MODELS_ROOT / "latest_metadata.json"
+
 
 ################################################################################
-# Styling and helpers
+# Styling helpers
 ################################################################################
 
 
 def apply_theme() -> None:
-    """Inject custom CSS for the dark theme aesthetic."""
     st.markdown(
         """
         <style>
@@ -111,16 +116,6 @@ def apply_theme() -> None:
                 font-weight: 600;
                 margin: 0;
             }
-            .trade-card {
-                border-left: 4px solid transparent;
-                transition: border-color 0.2s ease;
-            }
-            .trade-card.profit {
-                border-left-color: rgba(0, 204, 136, 0.85);
-            }
-            .trade-card.loss {
-                border-left-color: rgba(255, 51, 102, 0.85);
-            }
             .log-output {
                 font-family: "JetBrains Mono", "Fira Code", monospace;
                 font-size: 13px;
@@ -138,23 +133,466 @@ def apply_theme() -> None:
     )
 
 
-def load_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
+################################################################################
+# Utility
+################################################################################
 
 
-def load_yaml(path: Path) -> Dict[str, Any]:
+def load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
-    except yaml.YAMLError:
+        return json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError:
         return {}
+
+
+def save_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def format_timestamp(value: str | None) -> str:
+    if not value:
+        return "--"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return value
+
+
+def append_action_log(title: str, status: str, message: str) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "title": title,
+        "status": status,
+        "message": message,
+    }
+    st.session_state.setdefault("action_logs", [])
+    st.session_state["action_logs"].insert(0, entry)
+    st.session_state["action_logs"] = st.session_state["action_logs"][:8]
+
+
+def render_status_dot(label: str, color: str, text: str) -> None:
+    st.markdown(
+        f"""
+        <div class="status-dot" title="{text}">
+            <span style="background:{color};"></span>{label}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def fetch_runbot_state() -> Dict[str, Any]:
+    return load_json(STATE_FILE)
+
+
+def runbot_status_dot(name: str, processes: List[Dict[str, Any]]) -> Dict[str, str]:
+    entry = next((p for p in processes if p.get("Name") == name), None)
+    if not entry:
+        return {"label": "Stopped", "color": "var(--accent-red)", "tooltip": "Process not running"}
+    pid = entry.get("Id")
+    status = "Running" if pid else "Unknown"
+    color = "var(--accent-green)" if pid else "var(--accent-amber)"
+    tooltip = f"PID {pid}" if pid else "Status unknown"
+    return {"label": status, "color": color, "tooltip": tooltip}
+
+
+def list_training_runs() -> List[Tuple[str, Dict[str, Any]]]:
+    runs: list[Tuple[str, Dict[str, Any]]] = []
+    latest = load_json(LATEST_MODEL_METADATA)
+    if latest:
+        runs.append(("Latest", latest))
+    if TRAIN_HISTORY_DIR.exists():
+        for file in sorted(TRAIN_HISTORY_DIR.glob("metadata_*.json"), reverse=True):
+            data = load_json(file)
+            if not data:
+                continue
+            label = data.get("trained_at", file.stem.replace("metadata_", ""))
+            runs.append((label, data))
+    seen: set[str] = set()
+    unique: list[Tuple[str, Dict[str, Any]]] = []
+    for label, data in runs:
+        key = data.get("trained_at", label)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((label, data))
+    return unique
+
+
+def list_backtest_runs() -> List[Tuple[str, Dict[str, Any]]]:
+    runs: list[Tuple[str, Dict[str, Any]]] = []
+    latest = load_json(LATEST_BACKTEST_FILE)
+    if latest:
+        runs.append(("Latest", latest))
+    if BACKTEST_HISTORY_DIR.exists():
+        for file in sorted(BACKTEST_HISTORY_DIR.glob("backtest_*.json"), reverse=True):
+            data = load_json(file)
+            if not data:
+                continue
+            label = data.get("generated_at", file.stem.replace("backtest_", ""))
+            runs.append((label, data))
+    seen: set[str] = set()
+    unique: list[Tuple[str, Dict[str, Any]]] = []
+    for label, data in runs:
+        key = data.get("generated_at", label)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((label, data))
+    return unique
+
+
+def run_etl(force_download: bool = True) -> None:
+    config = load_config(CONFIG_PATH)
+    price_frame, engineered = prepare_dataset(config, force_download=force_download)
+    message = (
+        f"Symbol {config.data.symbol} | {engineered.shape[0]} rows | Interval {config.data.interval} | "
+        f"Prices span {price_frame.index.min()} to {price_frame.index.max()}"
+    )
+    append_action_log("Run ETL", "success", message)
+    st.success(f"ETL complete. {message}")
+
+
+def run_training(force_download: bool = False) -> Dict[str, Any]:
+    metrics = pipeline_train(CONFIG_PATH, force_download=force_download)
+    append_action_log(
+        "Train Model",
+        "success",
+        f"Accuracy {metrics.get('accuracy', 0):.2%} | Mode {metrics.get('mode', '--')}"
+    )
+    st.session_state["selected_training_option"] = None
+    return metrics
+
+
+def save_backtest_summary(payload: Dict[str, Any]) -> None:
+    payload.setdefault("generated_at", datetime.now(timezone.utc).isoformat())
+    save_json(LATEST_BACKTEST_FILE, payload)
+    BACKTEST_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    history_path = BACKTEST_HISTORY_DIR / f"backtest_{payload['generated_at'].replace(':', '-')}.json"
+    save_json(history_path, payload)
+
+
+def run_backtest(
+    force_download: bool = False,
+    long_threshold: float | None = None,
+    short_threshold: float | None = None,
+) -> Dict[str, Any]:
+    strategy_output, result, metadata = pipeline_backtest(
+        CONFIG_PATH,
+        force_download=force_download,
+        long_threshold=long_threshold,
+        short_threshold=short_threshold,
+    )
+    payload = {
+        "mode": metadata.get("interval", config.data.interval if (config := load_config(CONFIG_PATH)) else "--"),
+        "mode_score": getattr(strategy_output, "meta_score", None),
+        "mode_metrics": getattr(strategy_output, "meta_metrics", {}),
+        "summary": result.summary,
+    }
+    save_backtest_summary(payload)
+    sharpe = payload["summary"].get("sharpe_ratio", 0.0)
+    append_action_log("Backtest", "success", f"Sharpe {sharpe:.2f}")
+    st.session_state["selected_backtest_option"] = None
+    return payload
+
+
+def render_action_log_card() -> None:
+    logs = st.session_state.get("action_logs", [])
+    if not logs:
+        return
+    with st.expander("Recent actions", expanded=False):
+        for entry in logs:
+            st.markdown(f"**{entry['timestamp']}** ‚Äî {entry['title']} ({entry['status']})")
+            st.code(entry["message"], language="text")
+
+
+def render_overview() -> None:
+    st.subheader("Overview")
+    state = fetch_runbot_state()
+    processes = state.get("Processes") or state.get("processes") or []
+    col_a, col_b, col_c = st.columns([1.2, 1.3, 1.5])
+
+    with col_a:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">RunBot Health</div>', unsafe_allow_html=True)
+        for key, label in {
+            "prefect-server": "Prefect Server",
+            "prefect-worker": "Prefect Worker",
+            "gui-streamlit": "GUI",
+        }.items():
+            meta = runbot_status_dot(key, processes)
+            render_status_dot(label, meta["color"], meta["tooltip"])
+        timestamp = state.get("Timestamp") or state.get("timestamp")
+        if timestamp:
+            st.caption(f"Last update: {format_timestamp(timestamp)}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_b:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Quick Actions</div>', unsafe_allow_html=True)
+        qa_col1, qa_col2 = st.columns(2)
+        with qa_col1:
+            if st.button("Run ETL", key="qa_run_etl", use_container_width=True):
+                with st.spinner("Running ETL..."):
+                    run_etl(force_download=True)
+            if st.button("Backtest", key="qa_backtest", use_container_width=True):
+                with st.spinner("Running backtest..."):
+                    run_backtest()
+        with qa_col2:
+            if st.button("Train Model", key="qa_train", use_container_width=True):
+                with st.spinner("Training model..."):
+                    run_training()
+            if st.button("Run QC", key="qa_qc", use_container_width=True):
+                qc_result_path = RESULTS_ROOT / "qc_summary.json"
+                bronze = PROJECT_ROOT / "data" / "bronze"
+                silver = PROJECT_ROOT / "data" / "silver"
+                if bronze.exists() and silver.exists():
+                    import subprocess
+
+                    command = [
+                        sys.executable,
+                        "-m",
+                        "jobs.qc_check",
+                        "--bronze-root",
+                        str(bronze),
+                        "--silver-root",
+                        str(silver),
+                        "--output-json",
+                        str(qc_result_path),
+                    ]
+                    with st.spinner("Running QC checks..."):
+                        completed = subprocess.run(command, cwd=PROJECT_ROOT, capture_output=True, text=True)
+                    if completed.returncode == 0:
+                        append_action_log("QC", "success", "QC checks complete.")
+                        st.success("QC checks finished. Inspect qc_summary.json for details.")
+                    else:
+                        append_action_log("QC", "error", completed.stderr.strip() or "QC failed")
+                        st.error("QC checks failed; see console for details.")
+                else:
+                    st.warning("Expected bronze/silver directories not found; run the ETL pipeline first.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_c:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">System Environment</div>', unsafe_allow_html=True)
+        env_cols = st.columns(4)
+        metadata = {
+            "Python": sys.version.split()[0],
+            "Prefect": state.get("prefect_version", "3.x"),
+            "Work Pool": state.get("work_pool", "bitmex"),
+            "GUI Mode": state.get("gui_mode", "streamlit"),
+        }
+        for idx, (key, value) in enumerate(metadata.items()):
+            with env_cols[idx % 4]:
+                st.metric(key, value)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    render_action_log_card()
+
+
+def render_pipeline_stage(stage: Dict[str, str]) -> None:
+    color_map = {
+        "success": "var(--accent-green)",
+        "running": "var(--accent-blue)",
+        "warning": "var(--accent-amber)",
+        "failed": "var(--accent-red)",
+        "pending": "var(--text-muted)",
+    }
+    symbol_map = {
+        "success": "‚úì",
+        "running": "‚óè",
+        "warning": "!",
+        "failed": "‚úó",
+        "pending": "‚óã",
+    }
+    color = color_map.get(stage.get("status", "pending"), "var(--text-muted)")
+    symbol = symbol_map.get(stage.get("status", "pending"), "‚óã")
+    st.markdown(
+        f"""
+        <div class="card" style="text-align:center; border-left: 4px solid {color};">
+            <div class="card-title" style="justify-content:center; gap:0.5rem;">
+                <span style="color:{color}; font-size:1.4rem;">{symbol}</span>
+                {stage.get('name', 'Stage')}
+            </div>
+            <p style="margin:0; color:var(--text-secondary);">{stage.get('detail', '')}</p>
+        </div>
+        """,
+        unsafe_allow_html=True)
+
+
+def render_pipelines() -> None:
+    st.subheader("Pipelines")
+    raw_count = len(list((PROJECT_ROOT / "data" / "raw").rglob("*.csv")))
+    bronze_count = len(list((PROJECT_ROOT / "data" / "bronze").rglob("*.parquet")))
+    qc_summary = load_json(RESULTS_ROOT / "qc_summary.json")
+
+    stages = [
+        {
+            "name": "Download",
+            "status": "success" if raw_count else "pending",
+            "detail": f"Cached files: {raw_count}",
+        },
+        {
+            "name": "Normalize",
+            "status": "success" if bronze_count else "pending",
+            "detail": f"Parquet files: {bronze_count}",
+        },
+    ]
+    if qc_summary:
+        warn_count = len(qc_summary.get("trade_warnings", [])) + len(qc_summary.get("snapshot_warnings", []))
+        stages.append(
+            {
+                "name": "QC",
+                "status": "warning" if warn_count else "success",
+                "detail": f"Warnings: {warn_count}",
+            }
+        )
+    else:
+        stages.append(
+            {
+                "name": "QC",
+                "status": "pending",
+                "detail": "No QC summary on disk.",
+            }
+        )
+
+    stage_cols = st.columns(len(stages))
+    for col, stage in zip(stage_cols, stages):
+        with col:
+            render_pipeline_stage(stage)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">QC Summary</div>', unsafe_allow_html=True)
+    if qc_summary:
+        st.json(qc_summary)
+    else:
+        st.info("Run the QC check to generate qc_summary.json.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def build_option_map(runs: List[Tuple[str, Dict[str, Any]]]) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+    options: List[str] = []
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for idx, (label, data) in enumerate(runs):
+        timestamp = data.get("trained_at") or data.get("generated_at") or label
+        option = f"{idx + 1}. {timestamp}"
+        options.append(option)
+        mapping[option] = data
+    return options, mapping
+
+
+def render_model_backtesting() -> None:
+    st.subheader("Model & Backtesting")
+
+    training_runs = list_training_runs()
+    training_options, training_map = build_option_map(training_runs)
+    if training_options:
+        default_training = st.session_state.get("selected_training_option")
+        if default_training not in training_options:
+            default_training = training_options[0]
+        selected_training = st.selectbox(
+            "Training runs",
+            training_options,
+            index=training_options.index(default_training),
+            key="training_run_select",
+        )
+        st.session_state["selected_training_option"] = selected_training
+        training_data = training_map[selected_training]
+    else:
+        training_data = {}
+
+    backtest_runs = list_backtest_runs()
+    backtest_options, backtest_map = build_option_map(backtest_runs)
+    if backtest_options:
+        default_backtest = st.session_state.get("selected_backtest_option")
+        if default_backtest not in backtest_options:
+            default_backtest = backtest_options[0]
+        selected_backtest = st.selectbox(
+            "Backtest runs",
+            backtest_options,
+            index=backtest_options.index(default_backtest),
+            key="backtest_run_select",
+        )
+        st.session_state["selected_backtest_option"] = selected_backtest
+        backtest_data = backtest_map[selected_backtest]
+    else:
+        backtest_data = {}
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Latest Training</div>', unsafe_allow_html=True)
+        if training_data:
+            st.metric("Model", training_data.get("model", "Unknown"))
+            st.metric("Accuracy", f"{training_data.get('accuracy', 0):.2%}")
+            st.metric("Precision", f"{training_data.get('precision', 0):.2%}")
+            st.metric("Recall", f"{training_data.get('recall', 0):.2%}")
+            st.caption(f"Trained: {format_timestamp(training_data.get('trained_at'))}")
+            st.markdown("**Features**")
+            st.write(", ".join(training_data.get("features", [])) or "--")
+        else:
+            st.info("Train the model to populate this section.")
+        if st.button("Retrain Now", key="retrain_now"):
+            with st.spinner("Retraining model..."):
+                run_training()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_right:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Regime Selector</div>', unsafe_allow_html=True)
+        if training_data:
+            st.metric("Active Regime", training_data.get("mode", "--"))
+            mode_score = training_data.get("mode_score")
+            st.metric("Mode Score", f"{mode_score:.3f}" if mode_score is not None else "--")
+        else:
+            st.info("Train the model to evaluate regime selection.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Backtest KPIs</div>', unsafe_allow_html=True)
+    if backtest_data:
+        summary = backtest_data.get("summary", {})
+        metric_cols = st.columns(4)
+        labels = [
+            ("Sharpe", summary.get("sharpe_ratio")),
+            ("Total Return", summary.get("total_return")),
+            ("Max Drawdown", summary.get("max_drawdown")),
+            ("Win Rate", summary.get("win_rate")),
+        ]
+        for col, (label, value) in zip(metric_cols, labels):
+            with col:
+                st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
+                st.markdown(f'<div class="kpi-title">{label}</div>', unsafe_allow_html=True)
+                if value is None:
+                    display_value = "--"
+                elif label in {"Sharpe"}:
+                    display_value = f"{value:.2f}"
+                else:
+                    display_value = f"{value:.2%}"
+                st.markdown(f'<div class="kpi-value">{display_value}</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+        st.caption(f"Generated: {format_timestamp(backtest_data.get('generated_at'))}")
+    else:
+        st.info("Run a backtest to populate metrics.")
+    if st.button("Run Backtest", key="run_backtest_cta"):
+        with st.spinner("Running backtest..."):
+            run_backtest()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_live_trading() -> None:
+    st.subheader("Live Trading")
+    trades_path = RESULTS_ROOT / "open_trades.json"
+    trades = load_json(trades_path)
+    if trades:
+        rows = trades if isinstance(trades, list) else [trades]
+        st.table(rows)
+    else:
+        st.info("No open trade data available. Populate results/open_trades.json to enable this view.")
 
 
 def tail_file(path: Path, lines: int) -> str:
@@ -171,524 +609,90 @@ def tail_file(path: Path, lines: int) -> str:
 def list_log_files() -> List[Path]:
     if not LOG_ROOT.exists():
         return []
-    candidates: List[Path] = []
+    paths: List[Path] = []
     for pattern in ("*.log", "*.out.log", "*.err.log"):
-        candidates.extend(LOG_ROOT.glob(pattern))
-    return sorted(set(candidates))
-
-
-def humanize_timedelta(delta: timedelta) -> str:
-    total_seconds = int(delta.total_seconds())
-    prefix = ""
-    if total_seconds < 0:
-        total_seconds = abs(total_seconds)
-        prefix = "-"
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours > 0:
-        return f"{prefix}{hours}h {minutes}m"
-    if minutes > 0:
-        return f"{prefix}{minutes}m {seconds}s"
-    return f"{prefix}{seconds}s"
-
-
-def fetch_runbot_state() -> Dict[str, Any]:
-    data = load_json(STATE_FILE, {})
-    return {
-        "prefect_ui": data.get("PrefectUi"),
-        "gui_mode": data.get("GuiMode", "streamlit"),
-        "processes": data.get("Processes", []),
-        "timestamp": data.get("Timestamp"),
-    }
-
-
-def runbot_status_dot(name: str, processes: List[Dict[str, Any]]) -> Dict[str, Any]:
-    entry = next((p for p in processes if p.get("Name") == name), None)
-    if not entry:
-        return {"label": "Stopped", "color": "var(--accent-red)", "tooltip": "Process not running"}
-    pid = entry.get("Id")
-    label = "Running" if pid else "Unknown"
-    color = "var(--accent-green)" if pid else "var(--accent-amber)"
-    tooltip = f"PID {pid}" if pid else "Status unknown"
-    return {"label": label, "color": color, "tooltip": tooltip}
-
-
-def load_qc_summary() -> Dict[str, Any]:
-    return load_json(RESULTS_ROOT / "qc_summary.json", {})
-
-
-def load_backtest_results() -> Dict[str, Any]:
-    return load_json(BACKTEST_FILE, {})
-
-
-def load_training_metadata() -> Dict[str, Any]:
-    return load_json(TRAINING_META_FILE, {})
-
-
-def load_open_trades() -> List[Dict[str, Any]]:
-    default_sample = [
-        {
-            "symbol": "XBTUSD",
-            "side": "LONG",
-            "entry_price": 34250.0,
-            "current_price": 34580.0,
-            "pnl_pct": 0.96,
-            "pnl_usd": 96.0,
-            "size": 1000,
-            "capital_fraction": 0.10,
-            "stop": 33825.0,
-            "take": 35000.0,
-            "opened_at": (datetime.utcnow() - timedelta(hours=2, minutes=15)).isoformat(),
-        },
-        {
-            "symbol": "ETHUSD",
-            "side": "SHORT",
-            "entry_price": 1825.0,
-            "current_price": 1802.0,
-            "pnl_pct": 1.26,
-            "pnl_usd": 126.0,
-            "size": 500,
-            "capital_fraction": 0.08,
-            "stop": 1850.0,
-            "take": 1780.0,
-            "opened_at": (datetime.utcnow() - timedelta(minutes=45)).isoformat(),
-        },
-    ]
-    return load_json(OPEN_TRADES_FILE, default_sample)
-
-
-def load_drift_metrics() -> Dict[str, Any]:
-    default = {
-        "feature_drift": 0.12,
-        "feature_threshold": 0.15,
-        "prediction_drift": 0.03,
-        "prediction_threshold": 0.10,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    return load_json(DRIFT_FILE, default)
-
-
-def render_status_dot(label: str, color: str, text: str) -> None:
-    st.markdown(
-        f"""
-        <div class=\"status-dot\" title=\"{text}\">
-            <span style=\"background:{color};\"></span>{label}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_pipeline_stage(stage: Dict[str, Any]) -> None:
-    status = stage.get("status", "pending")
-    palette = {
-        "success": ("var(--accent-green)", "?"),
-        "running": ("var(--accent-blue)", "?"),
-        "pending": ("var(--text-muted)", "?"),
-        "failed": ("var(--accent-red)", "?"),
-    }
-    color, symbol = palette.get(status, palette["pending"])
-    label = stage.get("name", "Stage")
-    detail = stage.get("detail", "")
-    st.markdown(
-        f"""
-        <div class=\"card\" style=\"text-align:center; border-left: 4px solid {color};\">
-            <div class=\"card-title\" style=\"justify-content:center; gap: 0.5rem;\">
-                <span style=\"color:{color}; font-size:1.4rem;\">{symbol}</span>
-                {label}
-            </div>
-            <p style=\"margin:0; color:var(--text-secondary);\">{detail}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-################################################################################
-# Section renderers
-################################################################################
-
-
-def render_overview() -> None:
-    state = fetch_runbot_state()
-    processes = state.get("processes", [])
-
-    st.subheader("Overview")
-    col_a, col_b, col_c = st.columns([1.2, 1.3, 1.5])
-
-    with col_a:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">RunBot Health</div>', unsafe_allow_html=True)
-        mappings = {
-            "prefect-server": "Prefect Server",
-            "prefect-worker": "Prefect Worker",
-            "gui-streamlit": "GUI",
-        }
-        for key, label in mappings.items():
-            meta = runbot_status_dot(key, processes)
-            render_status_dot(label, meta["color"], meta["tooltip"])
-        timestamp = state.get("timestamp")
-        if timestamp:
-            st.markdown(f"<small>Last update: {timestamp}</small>", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col_b:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Quick Actions</div>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.button("Run ETL", use_container_width=True)
-            st.button("Backtest", use_container_width=True)
-        with c2:
-            st.button("Train Model", use_container_width=True)
-            st.button("Run QC", use_container_width=True)
-        st.info("Prefect integration pending. Buttons are placeholders.")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col_c:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Alert Feed</div>', unsafe_allow_html=True)
-        alerts = load_json(RESULTS_ROOT / "alerts.json", [])
-        if not alerts:
-            st.write("No active alerts.")
-        else:
-            for alert in alerts[:6]:
-                level = alert.get("level", "info").capitalize()
-                ts = alert.get("timestamp", "--")
-                msg = alert.get("message", "")
-                st.markdown(f"- **{level}**  `{ts}` ó {msg}")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">System Environment</div>', unsafe_allow_html=True)
-    env_cols = st.columns(4)
-    metadata = {
-        "Python": os.environ.get("PYTHON_VERSION", "3.11"),
-        "Prefect": os.environ.get("PREFECT_VERSION", "3.x"),
-        "Work Pool": os.environ.get("PREFECT_WORK_POOL", "bitmex"),
-        "GUI Mode": state.get("gui_mode", "streamlit"),
-    }
-    for idx, (key, value) in enumerate(metadata.items()):
-        with env_cols[idx % 4]:
-            st.metric(key, value)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Deployment Schedule (Next 24h)</div>', unsafe_allow_html=True)
-    schedule = load_json(RESULTS_ROOT / "prefect_schedule.json", [])
-    if not schedule:
-        st.write("No schedule data available.")
-    else:
-        for item in schedule:
-            name = item.get("deployment", "unknown")
-            run_in = item.get("run_in", "--")
-            st.write(f"ï {name} ó next run in {run_in}")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Quick Start</div>', unsafe_allow_html=True)
-    qcols = st.columns(4)
-    actions = [
-        ("Download Data", "python scripts/download_data.py --symbol BTC-USD --force"),
-        ("Train Model", "python -m ai_trading_bot train"),
-        ("Backtest", "python -m ai_trading_bot backtest"),
-        ("Run QC", "python -m jobs.qc_check ..."),
-    ]
-    for col, (label, command) in zip(qcols, actions):
-        with col:
-            st.button(label, use_container_width=True)
-            st.caption(f"`{command}`")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def render_pipelines() -> None:
-    st.subheader("Pipelines")
-    etl_status = load_json(RESULTS_ROOT / "etl_status.json", {})
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">ETL Status Board</div>', unsafe_allow_html=True)
-    stages = etl_status.get(
-        "stages",
-        [
-            {"name": "Download", "status": "success", "detail": "1.2M rows"},
-            {"name": "Normalize", "status": "running", "detail": "45% complete"},
-            {"name": "QC", "status": "pending", "detail": "Awaiting previous stage"},
-        ],
-    )
-    stage_cols = st.columns(len(stages))
-    for col, stage in zip(stage_cols, stages):
-        with col:
-            render_pipeline_stage(stage)
-    last_run = etl_status.get("last_run")
-    if last_run:
-        st.caption(f"Last run: {last_run.get('timestamp')} ï Duration: {last_run.get('duration')}")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    qc_data = load_qc_summary()
-    metrics_col, chart_col = st.columns([1, 1])
-    with metrics_col:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">QC Summary</div>', unsafe_allow_html=True)
-        if not qc_data:
-            st.info("Run the QC deployment to populate the summary.")
-        else:
-            for key, value in qc_data.items():
-                if isinstance(value, dict):
-                    passed = value.get("pass", 0)
-                    failed = value.get("fail", 0)
-                    total = passed + failed
-                    pct = (passed / total * 100) if total else 0
-                    st.metric(f"{key.capitalize()} pass rate", f"{pct:.1f}%", delta=f"-{failed} fail")
-                else:
-                    st.write(f"{key}: {value}")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with chart_col:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Pipeline Metrics</div>', unsafe_allow_html=True)
-        history = load_json(RESULTS_ROOT / "etl_history.json", [])
-        if history:
-            st.line_chart(history, height=200)
-        else:
-            st.write("No historical metrics yet.")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Recent Runs</div>', unsafe_allow_html=True)
-    runs = load_json(RESULTS_ROOT / "prefect_runs.json", [])
-    if runs:
-        st.dataframe(runs, use_container_width=True, height=240)
-    else:
-        st.write("No Prefect run history yet.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def render_model_backtesting() -> None:
-    st.subheader("Model & Backtesting")
-    training_meta = load_training_metadata()
-    backtest = load_backtest_results()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Latest Training</div>', unsafe_allow_html=True)
-        st.metric("Model", training_meta.get("model", "RandomForest"))
-        for label in ("accuracy", "precision", "recall"):
-            value = training_meta.get(label)
-            if isinstance(value, float):
-                display = f"{value:.2%}"
-            else:
-                display = value if value is not None else "--"
-            st.metric(label.capitalize(), display)
-        st.caption(f"Trained: {training_meta.get('trained_at', 'unknown')}")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Regime Selector</div>', unsafe_allow_html=True)
-        st.metric("Active Regime", training_meta.get("mode", "swing"))
-        score = training_meta.get("mode_score")
-        if isinstance(score, float):
-            st.metric("Confidence", f"{score:.3f}")
-        features = training_meta.get("features", [])
-        st.caption("Features: " + (", ".join(features) if features else "N/A"))
-        st.button("Retrain Now", key="retrain_model")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Backtest KPIs</div>', unsafe_allow_html=True)
-    if not backtest:
-        st.info("Run a backtest to populate metrics.")
-    else:
-        metric_cols = st.columns(4)
-        metric_pairs = [
-            ("Sharpe", backtest.get("sharpe")),
-            ("Total Return", backtest.get("total_return")),
-            ("Max Drawdown", backtest.get("max_drawdown")),
-            ("Win Rate", backtest.get("win_rate")),
-        ]
-        for col, (label, value) in zip(metric_cols, metric_pairs):
-            with col:
-                st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-                st.markdown(f'<div class="kpi-title">{label}</div>', unsafe_allow_html=True)
-                if isinstance(value, float):
-                    formatted = f"{value:.2%}" if "Return" in label or "Rate" in label else f"{value:.2f}"
-                else:
-                    formatted = value if value is not None else "--"
-                st.markdown(f'<div class="kpi-value">{formatted}</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    history = load_json(RESULTS_ROOT / "training_history.json", [])
-    if history:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Historical Metrics</div>', unsafe_allow_html=True)
-        st.line_chart(history, height=220)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-def render_trade_card(trade: Dict[str, Any]) -> None:
-    pnl_pct = trade.get("pnl_pct", 0.0)
-    pnl_usd = trade.get("pnl_usd", 0.0)
-    status_class = "profit" if pnl_pct >= 0 else "loss"
-    opened_at = trade.get("opened_at")
-    elapsed = "--"
-    if opened_at:
-        try:
-            opened_dt = datetime.fromisoformat(opened_at)
-            elapsed = humanize_timedelta(datetime.utcnow() - opened_dt)
-        except ValueError:
-            elapsed = "--"
-    st.markdown(
-        f"""
-        <div class=\"card trade-card {status_class}\">
-            <div class=\"card-title\">
-                <span style=\"font-size:1.2rem;font-weight:700;\">{trade.get('symbol','--')}</span>
-                <span>{trade.get('side','').upper()}</span>
-            </div>
-            <div style=\"display:flex; gap:2rem; flex-wrap:wrap;\">
-                <div><small>Entry</small><div style=\"font-size:1.05rem;\">{trade.get('entry_price','--')}</div></div>
-                <div><small>Current</small><div style=\"font-size:1.05rem;\">{trade.get('current_price','--')}</div></div>
-                <div><small>P&amp;L %</small><div style=\"font-size:1.05rem;color:{'var(--accent-green)' if pnl_pct >=0 else 'var(--accent-red)'};\">{pnl_pct:+.2f}%</div></div>
-                <div><small>P&amp;L USD</small><div style=\"font-size:1.05rem;color:{'var(--accent-green)' if pnl_usd >=0 else 'var(--accent-red)'};\">${pnl_usd:+.2f}</div></div>
-                <div><small>Size</small><div style=\"font-size:1.05rem;\">{trade.get('size','--')} units</div></div>
-                <div><small>Capital</small><div style=\"font-size:1.05rem;\">{trade.get('capital_fraction',0)*100:.1f}%</div></div>
-            </div>
-            <div style=\"margin-top:1rem; display:flex; gap:2rem; flex-wrap:wrap;\">
-                <div>Stop: {trade.get('stop','--')}</div>
-                <div>Take: {trade.get('take','--')}</div>
-                <div>Opened: {elapsed} ago</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    btn_cols = st.columns(2)
-    with btn_cols[0]:
-        st.button("Close Position", key=f"close_{trade.get('symbol')}_{trade.get('side')}")
-    with btn_cols[1]:
-        st.button("Adjust Risk", key=f"risk_{trade.get('symbol')}_{trade.get('side')}")
-
-
-def render_live_trading() -> None:
-    st.subheader("Live Trading")
-    trades = load_open_trades()
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Open Trades</div>', unsafe_allow_html=True)
-    if not trades:
-        st.info("No active positions.")
-    else:
-        total_usd = sum(trade.get("pnl_usd", 0.0) for trade in trades)
-        weighted_pct = sum(trade.get("pnl_pct", 0.0) * trade.get("capital_fraction", 0.0) for trade in trades)
-        capital = sum(trade.get("capital_fraction", 0.0) for trade in trades)
-        st.write(f"Aggregate P&L: ${total_usd:+.2f} ({weighted_pct:+.2f}%) ó Capital deployed: {capital*100:.1f}%")
-        for trade in trades:
-            render_trade_card(trade)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    col_risk, col_exposure = st.columns([1, 1])
-    with col_risk:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Risk Controls</div>', unsafe_allow_html=True)
-        st.write("Guardrails: Active")
-        st.write("Capital Usage: 18% of 50% limit")
-        st.write("Max Drawdown: -3.2%")
-        st.button("Kill Switch", key="kill_switch")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col_exposure:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Exposure by Regime</div>', unsafe_allow_html=True)
-        exposure = load_json(RESULTS_ROOT / "exposure.json", {"scalping": 0.1, "intraday": 0.35, "swing": 0.55})
-        st.bar_chart(exposure, height=180)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    drift = load_drift_metrics()
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Drift Monitoring</div>', unsafe_allow_html=True)
-    st.write(
-        f"Feature Drift: {drift.get('feature_drift', 0):.3f} (threshold {drift.get('feature_threshold', 0.15):.2f})"
-    )
-    st.write(
-        f"Prediction Drift: {drift.get('prediction_drift', 0):.3f} (threshold {drift.get('prediction_threshold', 0.10):.2f})"
-    )
-    st.caption(f"Last check: {drift.get('timestamp', '--')}")
-    st.button("Run Drift Test", key="run_drift")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Recent Prefect Runs</div>', unsafe_allow_html=True)
-    runs = load_json(RESULTS_ROOT / "prefect_runs_live.json", [])
-    if runs:
-        st.table(runs)
-    else:
-        st.write("No recent runs recorded for live flows.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        paths.extend(LOG_ROOT.glob(pattern))
+    return sorted(set(paths))
 
 
 def render_logs() -> None:
     st.subheader("Logs & Diagnostics")
     log_files = list_log_files()
     if not log_files:
-        st.warning("No logs found in the logs/ directory.")
+        st.warning("No logs found in the logs/ directory yet.")
         return
-    selected = st.selectbox("Select log file", [p.name for p in log_files])
-    lines = st.slider("Tail lines", min_value=50, max_value=1000, value=200, step=50)
+    options = [p.name for p in log_files]
+    selected = st.selectbox("Select log file", options)
+    lines = st.slider("Tail lines", 50, 1000, 200, 50)
+    autorefresh = st.checkbox("Auto-refresh every 5 seconds", value=False)
     log_path = next(p for p in log_files if p.name == selected)
     st.markdown('<div class="log-output">', unsafe_allow_html=True)
     st.text(tail_file(log_path, lines))
     st.markdown('</div>', unsafe_allow_html=True)
+    if autorefresh:
+        st.experimental_rerun()
 
-    col_snippets, col_env = st.columns([1, 1])
-    with col_snippets:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Command Snippets</div>', unsafe_allow_html=True)
-        snippets = {
-            "Run ETL Deployment": "prefect deployment run 'bitmex-etl-flow/etl-bitmex'",
-            "Tail Prefect Logs": "tail -f logs/prefect-server-*.out.log",
-            "Trigger QC": "prefect deployment run 'bitmex-qc-flow/qc-bitmex'",
-        }
-        for label, command in snippets.items():
-            st.markdown(f"**{label}**")
-            st.code(command, language="bash")
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    with col_env:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Environment Variables</div>', unsafe_allow_html=True)
-        env_path = PROJECT_ROOT / ".env"
-        if env_path.exists():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                if "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                mask = "******" if any(word in key.upper() for word in ("KEY", "SECRET", "TOKEN", "PASS")) else value
-                st.write(f"`{key}` = {mask}")
-        else:
-            st.write(".env file not found.")
-        st.markdown('</div>', unsafe_allow_html=True)
 
+
+def render_trailing_controls(config) -> None:
+    trailing = config.risk.trailing
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Trailing Stops & Take-Profit</div>', unsafe_allow_html=True)
+
+    summary_rows = []
+    for regime_key, label in [("HFT", "HFT"), ("intraday", "Intraday"), ("swing", "Swing")]:
+        summary_rows.append({"Regime": label, "Stop ATR": trailing.stop_multiplier(regime_key), "Take ATR": trailing.take_multiplier(regime_key)})
+    st.dataframe(pd.DataFrame(summary_rows).set_index("Regime"))
+
+    with st.form("trailing_form"):
+        enabled = st.checkbox("Enable trailing risk controls", value=trailing.enabled)
+        col_hft, col_intraday, col_swing = st.columns(3)
+        regime_inputs = {}
+        for col, regime_key, label in [(col_hft, "HFT", "HFT"), (col_intraday, "intraday", "Intraday"), (col_swing, "swing", "Swing")]:
+            with col:
+                stop_val = st.number_input(f"{label} stop ATR", min_value=0.1, value=float(trailing.stop_multiplier(regime_key)), step=0.1, format="%.2f", key=f"trail_stop_{regime_key}")
+                take_val = st.number_input(f"{label} take ATR", min_value=0.1, value=float(trailing.take_multiplier(regime_key)), step=0.1, format="%.2f", key=f"trail_take_{regime_key}")
+                regime_inputs[regime_key] = (stop_val, take_val)
+
+        min_lock = st.number_input("Min R multiple before trailing activates", min_value=0.0, value=float(trailing.min_lock.get("R_multiple", 1.0)), step=0.1, format="%.2f")
+        guard = st.number_input("Slippage guard (bps)", min_value=0.0, value=float(trailing.slippage_guard_bps), step=1.0)
+        max_updates = st.number_input("Max updates per minute", min_value=1, value=int(trailing.max_updates_per_min), step=1)
+        submitted = st.form_submit_button("Save Trailing Settings")
+        if submitted:
+            trailing.enabled = bool(enabled)
+            trailing.k_atr.setdefault("stop", {})
+            trailing.k_atr.setdefault("take", {})
+            for regime_key, (stop_val, take_val) in regime_inputs.items():
+                trailing.k_atr["stop"][regime_key] = float(stop_val)
+                trailing.k_atr["take"][regime_key] = float(take_val)
+            trailing.min_lock["R_multiple"] = float(min_lock)
+            trailing.slippage_guard_bps = float(guard)
+            trailing.max_updates_per_min = int(max_updates)
+            save_config(config, CONFIG_PATH)
+            st.success("Trailing settings updated. Changes persist to config.yaml")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 def render_settings() -> None:
     st.subheader("Settings")
-    config = load_yaml(PROJECT_ROOT / "config.yaml")
+    config = load_config(CONFIG_PATH)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">config.yaml Summary</div>', unsafe_allow_html=True)
     if config:
-        data_section = config.get("data", {})
-        pipeline = config.get("pipeline", {})
-        st.write(f"Symbol: {data_section.get('symbol','--')}")
-        st.write(
-            "Mode thresholds: long {0}, short {1}".format(
-                pipeline.get('long_threshold'), pipeline.get('short_threshold')
-            )
-        )
-        bands = pipeline.get("long_bands")
-        if bands:
-            st.write(f"Long bands: {bands}")
+        st.write(f"Symbol: {config.data.symbol}")
+        st.write(f"Interval: {config.data.interval}")
+        st.write(f"Lookahead: {config.pipeline.lookahead}")
+        st.write(f"Long threshold: {config.pipeline.long_threshold}")
+        st.write(f"Short threshold: {config.pipeline.short_threshold}")
     else:
         st.warning("config.yaml not found or could not be parsed.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    col_mode, col_runbot = st.columns([1, 1])
+    if config:
+        render_trailing_controls(config)
+
+    col_mode, col_runbot = st.columns(2)
     with col_mode:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">GUI Mode</div>', unsafe_allow_html=True)
@@ -709,7 +713,7 @@ def render_settings() -> None:
     st.markdown('<div class="card-title">.env Preview</div>', unsafe_allow_html=True)
     env_path = PROJECT_ROOT / ".env"
     if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
+        for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
             if "=" not in line:
                 continue
             key, value = line.split("=", 1)
@@ -720,29 +724,14 @@ def render_settings() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-################################################################################
-# Main application
-################################################################################
-
-
 def main() -> None:
     st.set_page_config(page_title="AI Trading Bot Control Center", layout="wide")
     apply_theme()
-    st.markdown(
-        """
-        <div class=\"main-header\">
-            <div>
-                <h1 style=\"margin-bottom:0;\">AI Trading Bot Control Center</h1>
-                <p style=\"color:var(--text-secondary); margin-top:4px;\">
-                    Operational overview for data pipelines, model training, and live trading.
-                </p>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
-    section = st.sidebar.radio(
+    st.title("AI Trading Bot Control Center")
+    st.caption("Manage data, training, and evaluation for the trading bot from one place.")
+
+    sidebar_option = st.sidebar.radio(
         "Navigate",
         (
             "Overview",
@@ -754,17 +743,17 @@ def main() -> None:
         ),
     )
 
-    if section == "Overview":
+    if sidebar_option == "Overview":
         render_overview()
-    elif section == "Pipelines":
+    elif sidebar_option == "Pipelines":
         render_pipelines()
-    elif section == "Model & Backtesting":
+    elif sidebar_option == "Model & Backtesting":
         render_model_backtesting()
-    elif section == "Live Trading":
+    elif sidebar_option == "Live Trading":
         render_live_trading()
-    elif section == "Logs & Diagnostics":
+    elif sidebar_option == "Logs & Diagnostics":
         render_logs()
-    elif section == "Settings":
+    elif sidebar_option == "Settings":
         render_settings()
 
 

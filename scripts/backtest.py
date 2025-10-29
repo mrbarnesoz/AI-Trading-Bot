@@ -41,18 +41,24 @@ def main() -> None:
     args = parse_args()
     long_threshold = args.long_threshold if args.long_threshold is not None else args.threshold
     short_threshold = args.short_threshold
-    decision, _, result = backtest(
+    strategy_output, result, metadata = backtest(
         args.config,
         force_download=args.force_download,
         long_threshold=long_threshold,
         short_threshold=short_threshold,
     )
     payload = {
-        "mode": decision.mode.name,
-        "mode_score": decision.score,
-        "mode_metrics": decision.metrics,
+        "symbol": metadata.get("symbol"),
+        "interval": metadata.get("interval"),
+        "rows": metadata.get("rows"),
+        "meta_score": getattr(strategy_output, "meta_score", None),
+        "meta_metrics": getattr(strategy_output, "meta_metrics", {}),
         "summary": result.summary,
     }
+    decisions = getattr(strategy_output, "decisions", None)
+    if hasattr(decisions, "iloc") and len(decisions) > 0:  # pragma: no branch - simple duck typing check
+        latest = decisions.iloc[-1].to_dict()
+        payload["latest_decision"] = latest
     print(json.dumps(payload, indent=2))
 
 

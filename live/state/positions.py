@@ -19,8 +19,20 @@ class SubPosition:
     size: float
     entry_price: float
     stop_price: Optional[float] = None
-    trail_price: Optional[float] = None
+    take_profit_price: Optional[float] = None
     strategy: str = "core"
+    regime: str = "intraday"
+    atr_at_entry: Optional[float] = None
+    initial_stop_price: Optional[float] = None
+    best_favorable_price: Optional[float] = None
+    best_adverse_price: Optional[float] = None
+    r_multiple: float = 0.0
+    take_profit_active: bool = True
+    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updates_this_minute: int = 0
+    last_update_minute: Optional[int] = None
+    snapshots_since_update: int = 0
+    pending_exit: Optional[str] = None
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
@@ -30,8 +42,20 @@ class SubPosition:
             "size": self.size,
             "entry_price": self.entry_price,
             "stop_price": self.stop_price,
-            "trail_price": self.trail_price,
+            "take_profit_price": self.take_profit_price,
             "strategy": self.strategy,
+            "regime": self.regime,
+            "atr_at_entry": self.atr_at_entry,
+            "initial_stop_price": self.initial_stop_price,
+            "best_favorable_price": self.best_favorable_price,
+            "best_adverse_price": self.best_adverse_price,
+            "r_multiple": self.r_multiple,
+            "take_profit_active": self.take_profit_active,
+            "last_update": self.last_update.isoformat(),
+            "updates_this_minute": self.updates_this_minute,
+            "last_update_minute": self.last_update_minute,
+            "snapshots_since_update": self.snapshots_since_update,
+            "pending_exit": self.pending_exit,
             "opened_at": self.opened_at.isoformat(),
         }
 
@@ -42,14 +66,31 @@ class SubPosition:
             opened_at = datetime.fromisoformat(opened_at)
         if opened_at is None:
             opened_at = datetime.now(timezone.utc)
+        last_update = data.get("last_update")
+        if isinstance(last_update, str):
+            last_update = datetime.fromisoformat(last_update)
+        if last_update is None:
+            last_update = datetime.now(timezone.utc)
         return cls(
             id=data["id"],
             side=data["side"],
             size=float(data["size"]),
             entry_price=float(data["entry_price"]),
             stop_price=data.get("stop_price"),
-            trail_price=data.get("trail_price"),
+            take_profit_price=data.get("take_profit_price") or data.get("trail_price"),
             strategy=data.get("strategy", "core"),
+            regime=data.get("regime", "intraday"),
+            atr_at_entry=data.get("atr_at_entry"),
+            initial_stop_price=data.get("initial_stop_price"),
+            best_favorable_price=data.get("best_favorable_price"),
+            best_adverse_price=data.get("best_adverse_price"),
+            r_multiple=float(data.get("r_multiple", 0.0) or 0.0),
+            take_profit_active=bool(data.get("take_profit_active", True)),
+            last_update=last_update,
+            updates_this_minute=int(data.get("updates_this_minute", 0)),
+            last_update_minute=data.get("last_update_minute"),
+            snapshots_since_update=int(data.get("snapshots_since_update", 0)),
+            pending_exit=data.get("pending_exit"),
             opened_at=opened_at,
         )
 
