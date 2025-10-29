@@ -1,9 +1,9 @@
 data:
-  symbol: "BTC-USD"
+  symbol: "XBTUSD"
   start_date: "2018-01-01"
   end_date: null
-  interval: "1d"
-  source: "yfinance"
+  interval: "1h"
+  source: "bitmex"
   cache_dir: "data/raw"
 features:
   indicators: ["sma", "ema", "rsi", "macd"]

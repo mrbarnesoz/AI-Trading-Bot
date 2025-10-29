@@ -19,6 +19,7 @@ class StrategyOutput:
     signals: pd.Series
     probabilities: pd.Series
     data: pd.DataFrame
+    decisions: pd.DataFrame | None = None
 
 
 def _prepare_long_bands(bands: Sequence[float], override: Optional[float]) -> list[float]:

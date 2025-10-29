@@ -58,20 +58,18 @@ def main() -> None:
         print(json.dumps(metrics, indent=2))
     elif args.command == "backtest":
         long_threshold = args.long_threshold if args.long_threshold is not None else args.threshold
-        short_threshold = args.short_threshold
-        decision, _, result = backtest(
+        strategy_output, result, metadata = backtest(
             args.config,
             force_download=args.force_download,
             long_threshold=long_threshold,
-            short_threshold=short_threshold,
+            short_threshold=args.short_threshold,
         )
         payload = {
-            "mode": decision.mode.name,
-            "mode_score": decision.score,
-            "mode_metrics": decision.metrics,
+            "metadata": metadata,
             "summary": result.summary,
+            "signal_preview": strategy_output.signals.tail(5).to_dict(),
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, default=str))
     else:  # pragma: no cover - argparse prevents this
         parser.print_help()
 
