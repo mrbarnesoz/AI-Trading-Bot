@@ -1,0 +1,109 @@
+{
+  "config": {
+    "maker_fee_bps": -0.025,
+    "taker_fee_bps": 7.5,
+    "slip_bps": 1.5,
+    "latency_ms": 150,
+    "spread_threshold_bps": 10.0,
+    "max_position_usd": 100000.0
+  },
+  "summary": {
+    "trades": 120,
+    "gross_pnl": 4618.1849468326745,
+    "net_pnl": 4618.1849468326745,
+    "average_realized_bps": 3.8484874556938946,
+    "max_spread_bps": 20.5168453165252
+  },
+  "sample_trades": [
+    {
+      "timestamp": "2025-10-31T20:23:00+00:00",
+      "spread_bps": 13.354487538336135,
+      "realized_bps": 4.329487538336135,
+      "pnl": 43.29487538336135,
+      "direction": 1,
+      "entry_price": 109572.8,
+      "exit_price": 109660.89523314484
+    },
+    {
+      "timestamp": "2025-10-31T20:51:00+00:00",
+      "spread_bps": 12.401882089768117,
+      "realized_bps": 3.3768820897681167,
+      "pnl": 33.76882089768117,
+      "direction": 1,
+      "entry_price": 109552.3,
+      "exit_price": 109680.85193765794
+    },
+    {
+      "timestamp": "2025-10-31T20:52:00+00:00",
+      "spread_bps": 15.553589615521304,
+      "realized_bps": 6.5285896155213035,
+      "pnl": 65.28589615521302,
+      "direction": 1,
+      "entry_price": 109481.4,
+      "exit_price": 109568.12152510163
+    },
+    {
+      "timestamp": "2025-10-31T20:53:00+00:00",
+      "spread_bps": 18.123690756768244,
+      "realized_bps": 9.098690756768244,
+      "pnl": 90.98690756768244,
+      "direction": 1,
+      "entry_price": 109388.9,
+      "exit_price": 109482.49411229129
+    },
+    {
+      "timestamp": "2025-10-31T21:15:00+00:00",
+      "spread_bps": 16.919728144671982,
+      "realized_bps": 7.894728144671982,
+      "pnl": 78.94728144671983,
+      "direction": 1,
+      "entry_price": 109264.2,
+      "exit_price": 109403.2783795316
+    },
+    {
+      "timestamp": "2025-10-31T21:45:00+00:00",
+      "spread_bps": 14.721421230573538,
+      "realized_bps": 5.696421230573538,
+      "pnl": 56.96421230573538,
+      "direction": 1,
+      "entry_price": 109484.0,
+      "exit_price": 109563.3929081888
+    },
+    {
+      "timestamp": "2025-10-31T22:25:00+00:00",
+      "spread_bps": 13.262379500030711,
+      "realized_bps": 4.237379500030711,
+      "pnl": 42.37379500030711,
+      "direction": 1,
+      "entry_price": 109507.9,
+      "exit_price": 109586.82426566651
+    },
+    {
+      "timestamp": "2025-10-31T23:14:00+00:00",
+      "spread_bps": 11.019351894388524,
+      "realized_bps": 1.9943518943885241,
+      "pnl": 19.94351894388524,
+      "direction": 1,
+      "entry_price": 109460.8,
+      "exit_price": 109491.52860235162
+    },
+    {
+      "timestamp": "2025-11-01T00:03:00+00:00",
+      "spread_bps": 13.477736834520101,
+      "realized_bps": 4.452736834520101,
+      "pnl": 44.52736834520101,
+      "direction": 1,
+      "entry_price": 109390.0,
+      "exit_price": 109511.6395439886
+    },
+    {
+      "timestamp": "2025-11-01T01:34:00+00:00",
+      "spread_bps": 11.942708964109809,
+      "realized_bps": 2.917708964109808,
+      "pnl": 29.177089641098085,
+      "direction": 1,
+      "entry_price": 109819.3,
+      "exit_price": 109950.45399385423
+    }
+  ]
+}

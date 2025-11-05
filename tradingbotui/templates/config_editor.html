@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<h3 class="mb-3">Strategy Configuration Editor</h3>
+
+<form method="get" action="{{ url_for('main.config_editor') }}" class="mb-3">
+  <label for="fileSelect" class="form-label">Select Config File</label>
+  <div class="input-group">
+    <select id="fileSelect" name="file" class="form-select" title="Choose a configuration file to edit">
+      <option value="" disabled selected>-- choose file --</option>
+      {% for fname in files %}
+        <option value="{{ fname }}" {% if selected_file == fname %}selected{% endif %}>{{ fname }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-outline-primary">Load</button>
+  </div>
+</form>
+
+{% if selected_file %}
+  <form method="post" action="{{ url_for('main.config_editor') }}">
+    <input type="hidden" name="filename" value="{{ selected_file }}" />
+    <div class="mb-3">
+      <label for="configContent" class="form-label">Editing <strong>{{ selected_file }}</strong></label>
+      <textarea id="configContent" name="content" class="form-control" rows="18" style="font-family: monospace;" title="Edit the YAML configuration carefully">{{ content }}</textarea>
+      <div class="form-text">Changes are validated as YAML and a <code>.bak</code> backup is created on save.</div>
+    </div>
+    <div class="mb-3 d-flex flex-wrap gap-2">
+      <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#configValidateModal" title="Review validation requirements before saving">Review &amp; Save</button>
+      <button type="button" class="btn btn-secondary" onclick="window.location='{{ url_for('main.config_editor', file=selected_file) }}';" title="Discard unsaved changes and reload from disk">Undo Changes</button>
+      <button type="button" class="btn btn-warning" onclick="if(confirm('Restore the previous backup for {{ selected_file }}?')) { window.location='{{ url_for('main.config_editor', file=selected_file, restore=true) }}'; }" title="Restore the most recent backup (.bak) file">Restore Backup</button>
+    </div>
+    <div class="modal fade" id="configValidateModal" tabindex="-1" aria-labelledby="configValidateModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="configValidateModalLabel">Validate Configuration Changes</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-2">Saving will validate the YAML and update guardrail snapshots. Before continuing:</p>
+            <ul class="small mb-3">
+              <li>Confirm recent backtests show <strong>≥ 200 trades</strong> and <strong>non-negative Sharpe</strong>.</li>
+              <li>Ensure risk limits and capital allocation align with portfolio constraints.</li>
+              <li>Consider exporting the current config for reference.</li>
+            </ul>
+            <div class="alert alert-warning mb-0 small">
+              Need to revert instead? Use the <strong>Revert</strong> action below to restore the previous backup.
+            </div>
+          </div>
+          <div class="modal-footer">
+            <a class="btn btn-outline-secondary me-auto" href="{{ url_for('main.config_editor', file=selected_file, restore=true) }}">Revert to Backup</a>
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-success">Validate &amp; Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </form>
+  <div class="alert alert-info">
+    <strong>Tip:</strong> Config files live in <code>configs/</code>. Duplicate an existing file to create new strategy variations.
+  </div>
+{% else %}
+  <p class="text-muted">Select a configuration file from the dropdown above to view or edit its contents.</p>
+{% endif %}
+{% endblock %}

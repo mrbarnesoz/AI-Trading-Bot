@@ -12,6 +12,7 @@ from live.policy.decision import DecisionPolicy
 from live.risk.guardrails import RiskGuardrails
 from live.risk.trailing import TrailingManager
 from live.state.checkpoint import StateCheckpoint
+from ai_trading_bot.meta.select import MetaStrategySelector
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class EmbeddedAgent:
         router: OrderRouter,
         checkpoint: StateCheckpoint,
         trailing: TrailingManager | None = None,
+        meta_selector: MetaStrategySelector | None = None,
     ) -> None:
         self.symbols = symbols
         self.policy = policy
@@ -40,6 +42,7 @@ class EmbeddedAgent:
         self.router = router
         self.checkpoint = checkpoint
         self.trailing = trailing
+        self.meta_selector = meta_selector
         self._tasks: Dict[str, asyncio.Task] = {}
         self.checkpoint.bind(self.risk)
         self.checkpoint.load()
@@ -65,4 +68,7 @@ class EmbeddedAgent:
                 await self.checkpoint.persist()
                 if self.trailing:
                     self.trailing.flush()
+                if self.meta_selector:
+                    self.meta_selector.flush()
+                self.risk.mark_checkpoint()
             await asyncio.sleep(DecisionPolicy.sampling_interval(cfg.regime))

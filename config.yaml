@@ -1,10 +1,10 @@
 data:
-  symbol: "BTC-USD"
-  start_date: "2018-01-01"
+  symbol: "XBTUSD"
+  start_date: "2023-01-01T00:00:00Z"
   end_date: null
-  interval: "1d"
-  source: "yfinance"
-  cache_dir: "data/raw"
+  interval: "1h"
+  source: "bitmex"
+  cache_dir: "data/raw/bitmex"
 features:
   indicators: ["sma", "ema", "rsi", "macd"]
   sma_window: 10
@@ -25,9 +25,49 @@ backtest:
   initial_capital: 10000
   transaction_cost: 0.001
   risk_free_rate: 0.01
-  position_capital_fraction: 0.1
-  max_total_capital_fraction: 0.5
-  max_position_units: 3
+  position_capital_fraction: 0.03
+  max_total_capital_fraction: 0.09
+  max_position_units: 4
+  maker_fee_bps: 0.01
+  taker_fee_bps: 0.06
+  per_side_fee_bps: 0.0
+  slippage_bps: 0.0
+  funding_rate_column: "fundingRate"
+  funding_accrual_hours: 8
+  simulate_funding: true
+  signal_persistence_bars: 1
+  flip_cooldown_bars: 0
+  fallback_spread_bps: 5.0
+  backtest_min_lock: 0.2
+  entry_mode: "maker_post_only"
+  max_entry_wait_bars: 24
+  cancel_spread_bps: 8
+  reprice_on: ["new_bar", "top_of_book_change"]
+  reprice_tick_offset: 1.0
+  partial_fill_min_qty_frac: 0.25
+  allow_cross_after_timeout: false
+  min_hold_bars: 24
+  cooldown_bars_after_exit: 0
+  max_trades_per_day_side: 12
+  invert_side: false
+  enforce_gates: true
+  maker_ratio_target: 0.95
+  slippage_bps_target: 2.0
+  trades_per_day_target: 2.0
+  max_drawdown_floor: -0.12
+  min_gate_trades: 500
+  min_slippage_bps: 0.5
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.2
+filters:
+  allow_long: true
+  allow_short: true
+  min_atr_frac: 0.0025
+  trend_slope_lookback: 48
+  min_trend_slope: 0.0
+  hysteresis_k_atr: 1.0
+  min_confidence: 0.10
+  min_adx: 15
 risk:
   trailing:
     enabled: true
@@ -42,11 +82,11 @@ risk:
       stop:
         HFT: 2.0
         intraday: 3.0
-        swing: 4.0
+        swing: 2.0
       take:
         HFT: 1.0
         intraday: 1.5
-        swing: 2.0
+        swing: 3.5
     min_lock:
       R_multiple: 1.0
     floor_ceiling:
@@ -56,13 +96,18 @@ risk:
         min_px_distance_ticks: 1
     slippage_guard_bps: 5
     max_updates_per_min: 60
+  latency_arb:
+    enabled: false
+    min_average_bps: 3.0
+    min_trades: 80
+    summary_path: "results/latency_arbitrage/latency_arbitrage_summary.json"
 pipeline:
   lookahead: 1
   target_column: "target_return"
-  long_threshold: 0.55
-  short_threshold: 0.45
-  long_bands: [0.55, 0.65, 0.8]
-  short_bands: [0.45, 0.35, 0.25]
+  long_threshold: 0.54
+  short_threshold: 0.46
+  long_bands: [0.54, 0.64, 0.74]
+  short_bands: [0.46, 0.36, 0.26]
 modes:
   - name: "scalping"
     interval: "1m"
@@ -103,3 +148,4 @@ modes:
     position_fraction: 0.2
     max_total_fraction: 0.6
     max_position_units: 2
+

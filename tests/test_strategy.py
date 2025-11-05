@@ -44,3 +44,19 @@ def test_generate_signals_supports_probability_banding(tmp_path: Path) -> None:
 
     assert output.signals.tolist() == [-3, -2, 0, 2, 3]
     assert np.allclose(output.probabilities.to_numpy(), engineered["probability"].to_numpy())
+    assert {"trend", "mean_reversion"}.issubset(output.components.keys())
+    trend_component = output.components["trend"]
+    assert trend_component.index.equals(engineered.index)
+    assert trend_component.tolist() == [-1.0, -1.0, 0.0, 1.0, 1.0]
+    mean_rev_component = output.components["mean_reversion"]
+    assert mean_rev_component.tolist() == [0.0] * 5
+    assert "trend" in output.component_probabilities
+    assert np.allclose(
+        output.component_probabilities["trend"].to_numpy(),
+        output.probabilities.to_numpy(),
+    )
+    assert "mean_reversion" in output.component_probabilities
+    assert np.allclose(
+        output.component_probabilities["mean_reversion"].to_numpy(),
+        np.full(5, 0.5),
+    )

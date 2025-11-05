@@ -29,20 +29,26 @@ $PREFECT_UI      = "http://127.0.0.1:4200"
 $PREFECT_API_URL = "http://127.0.0.1:4200/api"
 $WorkPool        = "bitmex"
 $UseDockerAgent  = $false
-$GuiMode         = "streamlit" # streamlit | fastapi | gradio
+$GuiMode         = "flask" # flask | streamlit | fastapi | gradio
 $StreamlitEntry  = "ui/app.py"
+$FlaskEntry      = "run.py"
 $FastAPIApp      = "orchestration.api:app"
 $GradioEntry     = "ui/gradio_app.py"
 $LogsDir         = "$PSScriptRoot\logs"
 $EnvFile         = "$PSScriptRoot\.env"
 $Requirements    = "$PSScriptRoot\requirements.txt"
 $StateFile       = Join-Path $LogsDir "runbot-state.json"
+$ManageKafkaStack = $true
+$KafkaComposeFile = Join-Path $PSScriptRoot "docker\docker-compose.kafka.yml"
+$KafkaProjectName = "trading-bot"
+$KafkaNetworkName = "kafka-net"
 
 # -----------------------------------------------------------------------------
 # Globals
 # -----------------------------------------------------------------------------
 $script:ProcessRegistry   = @()
 $script:TailJobs          = @()
+$script:MonitorJobs       = @()
 $script:ServerStarted     = $false
 $script:ShutdownRequested = $false
 $script:CleanupComplete   = $false
@@ -199,6 +205,119 @@ function Load-DotEnv {
     }
 }
 
+function Invoke-ProcessWithInput {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string[]]$InputLines = @(),
+        [string]$WorkingDirectory = $PSScriptRoot,
+        [string]$Description = ""
+    )
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $FilePath
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    foreach ($arg in $ArgumentList) {
+        [void]$psi.ArgumentList.Add($arg)
+    }
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    try {
+        if ($InputLines.Count -gt 0) {
+            foreach ($line in $InputLines) {
+                $process.StandardInput.WriteLine($line)
+            }
+        }
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($Description) {
+            Write-Log "$Description exited with code $($process.ExitCode)" "DEBUG"
+        }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout   = $stdout
+            Stderr   = $stderr
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Ensure-KafkaNetwork {
+    if (-not $ManageKafkaStack) { return }
+    try {
+        & docker network inspect $KafkaNetworkName *> $null 2>&1
+        if ($LASTEXITCODE -eq 0) { return }
+        Write-Log "Creating Docker network '$KafkaNetworkName'..." "INFO"
+        & docker network create $KafkaNetworkName *> $null 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "Failed to create Docker network '$KafkaNetworkName' (exit $LASTEXITCODE)." "WARN"
+        }
+    } catch {
+        Write-Log "Docker network check failed: $($_.Exception.Message)" "WARN"
+    }
+}
+
+function Start-KafkaStack {
+    if (-not $ManageKafkaStack) { return }
+    if (-not (Test-Path $KafkaComposeFile)) {
+        Write-Log "Kafka compose file not found at $KafkaComposeFile; skipping broker startup." "WARN"
+        return
+    }
+    try {
+        Ensure-Command -Command "docker" -FriendlyName "Docker CLI"
+    } catch {
+        Write-Log "Docker CLI not found; skipping Kafka/ZooKeeper stack startup. Set RUNBOT_SKIP_KAFKA=1 to hide this warning." "WARN"
+        $script:ManageKafkaStack = $false
+        return
+    }
+    Ensure-KafkaNetwork
+    $args = @("compose", "-p", $KafkaProjectName, "-f", $KafkaComposeFile, "up", "-d", "--remove-orphans")
+    try {
+        $result = Invoke-ProcessWithInput -FilePath "docker" -ArgumentList $args -Description "docker compose up (Kafka stack)"
+    } catch {
+        Write-Log "Kafka/ZooKeeper launch threw an exception: $($_.Exception.Message). Continuing without Kafka." "WARN"
+        return
+    }
+    if ($result.ExitCode -ne 0) {
+        $msg = $result.Stderr.Trim()
+        if (-not $msg) { $msg = $result.Stdout.Trim() }
+        if (-not $msg) { $msg = "exit $($result.ExitCode)" }
+        Write-Log "Kafka/ZooKeeper launch encountered an error ($msg). Continuing without Kafka." "WARN"
+        return
+    }
+    Write-Log "Kafka/ZooKeeper stack running (project '$KafkaProjectName')." "SUCCESS"
+}
+
+function Stop-KafkaStack {
+    if (-not $ManageKafkaStack) { return }
+    if (-not (Test-Path $KafkaComposeFile)) { return }
+    $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
+    if (-not $dockerCmd) { return }
+    $args = @("compose", "-p", $KafkaProjectName, "-f", $KafkaComposeFile, "down")
+    try {
+        $result = Invoke-ProcessWithInput -FilePath "docker" -ArgumentList $args -Description "docker compose down (Kafka stack)"
+    } catch {
+        Write-Log "Kafka stack shutdown threw an exception: $($_.Exception.Message)" "WARN"
+        return
+    }
+    if ($result.ExitCode -ne 0) {
+        $msg = $result.Stderr.Trim()
+        if (-not $msg) { $msg = $result.Stdout.Trim() }
+        if (-not $msg) { $msg = "exit $($result.ExitCode)" }
+        Write-Log "Kafka stack shutdown returned exit $($result.ExitCode): $msg" "WARN"
+    } else {
+        Write-Log "Kafka/ZooKeeper stack stopped." "INFO"
+    }
+}
+
 function Get-SitePackagesPath {
     $scriptsDir = Split-Path $PythonExe -Parent
     $venvRoot = Split-Path $scriptsDir -Parent
@@ -312,6 +431,41 @@ function Stop-LogTails {
     $script:TailJobs = @()
 }
 
+function Start-LogMonitor {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$Filter = "404|ERROR|Traceback|Exception"
+    )
+    if (-not (Test-Path $Path)) {
+        Write-Log "Monitor $Name cannot watch $Path (file missing)." "DEBUG"
+        return
+    }
+    Write-Log "Starting monitor $Name on $Path" "DEBUG"
+    $job = Start-Job -Name "monitor-$Name" -ArgumentList $Name, $Path, $Filter -ScriptBlock {
+        param($InnerName, $InnerPath, $InnerFilter)
+        Write-Host ("[MONITOR][{0}] {1}" -f $InnerName, $InnerPath) -ForegroundColor Yellow
+        Get-Content -Path $InnerPath -Encoding UTF8 -Tail 0 -Wait | ForEach-Object {
+            if ($_ -match $InnerFilter) {
+                Write-Host ("[MONITOR][{0}] {1}" -f $InnerName, $_) -ForegroundColor Yellow
+            }
+        }
+    }
+    $script:MonitorJobs += $job
+}
+
+function Stop-LogMonitors {
+    foreach ($job in $script:MonitorJobs) {
+        try {
+            if ($job -and $job.State -in @('Running','NotStarted')) {
+                Stop-Job -Job $job -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    $script:MonitorJobs = @()
+}
+
 function Save-RunState {
     $entries = @()
     foreach ($proc in $script:ProcessRegistry) {
@@ -363,7 +517,13 @@ function Stop-RunBotCurrent {
             }
         }
     }
+    try {
+        Stop-KafkaStack
+    } catch {
+        Write-Log "Kafka stack shutdown encountered a problem: $($_.Exception.Message)" "WARN"
+    }
     Remove-RunState
+    Stop-LogMonitors
     Write-Log "RunBot stop complete." "SUCCESS"
 }
 
@@ -393,7 +553,13 @@ function Stop-RunBotFromState {
             Write-Log "Failed to stop $($proc.Name): $($_.Exception.Message)" "WARN"
         }
     }
+    try {
+        Stop-KafkaStack
+    } catch {
+        Write-Log "Kafka stack shutdown encountered a problem: $($_.Exception.Message)" "WARN"
+    }
     Remove-RunState
+    Stop-LogMonitors
     Write-Log "Stop request processed." "SUCCESS"
 }
 
@@ -509,11 +675,46 @@ function Deploy-PrefectFlows {
         return
     }
     Write-Log "Deploying Prefect flows from prefect.yaml..." "INFO"
-    & $script:PrefectExe deploy --all --pool $WorkPool
-    if ($LASTEXITCODE -ne 0) {
-        throw "Prefect deployment failed (exit $LASTEXITCODE)"
+    $previousPromptSetting = $env:PREFECT_CLI_PROMPTS_ENABLED
+    $previousDefaultResponse = $env:PREFECT_DEFAULT_RESPONSE
+    $env:PREFECT_CLI_PROMPTS_ENABLED = "false"
+    $env:PREFECT_DEFAULT_RESPONSE = "n"
+    try {
+        $args = @("deploy", "--prefect-file", $spec, "--all")
+        if ($WorkPool) {
+            $args += @("--pool", $WorkPool)
+        }
+        $responses = @("n","n","n","n","n","n","n","n","n","n")
+        $result = Invoke-ProcessWithInput -FilePath $script:PrefectExe -ArgumentList $args -InputLines $responses -Description "prefect deploy"
+        if ($result.ExitCode -ne 0) {
+            Write-Log "Prefect deployment failed (exit $($result.ExitCode))." "WARN"
+            if ($result.Stderr) {
+                Write-Log $result.Stderr.Trim() "DEBUG"
+            }
+            Write-Log "You can retry manually with `prefect deploy --prefect-file prefect.yaml --all --pool $WorkPool` once the server is reachable." "WARN"
+            return
+        }
+        if ($result.Stdout) {
+            foreach ($line in ($result.Stdout -split "`r?`n")) {
+                if ($line.Trim()) { Write-Log $line.Trim() "DEBUG" }
+            }
+        }
+        Write-Log "Deployments up to date." "SUCCESS"
     }
-    Write-Log "Deployments up to date." "SUCCESS"
+    finally {
+        if ($null -ne $previousPromptSetting) {
+            $env:PREFECT_CLI_PROMPTS_ENABLED = $previousPromptSetting
+        }
+        else {
+            Remove-Item Env:PREFECT_CLI_PROMPTS_ENABLED -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $previousDefaultResponse) {
+            $env:PREFECT_DEFAULT_RESPONSE = $previousDefaultResponse
+        }
+        else {
+            Remove-Item Env:PREFECT_DEFAULT_RESPONSE -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Start-PrefectWorkerOrAgent {
@@ -562,6 +763,37 @@ function Start-Gui {
     }
 
     switch ($GuiMode.ToLowerInvariant()) {
+        "flask" {
+            $entry = Join-Path $PSScriptRoot $FlaskEntry
+            if (-not (Test-Path $entry)) { throw "Flask entry not found at $entry" }
+            if (Test-Port -TargetHost "127.0.0.1" -Port 5000) {
+                Write-Log "Port 5000 already in use; Flask UI may fail to bind." "WARN"
+            }
+            $previousFlaskDebug = Get-Item Env:FLASK_DEBUG -ErrorAction SilentlyContinue
+            try {
+                if ($DebugMode) {
+                    $env:FLASK_DEBUG = "1"
+                } else {
+                    Remove-Item Env:FLASK_DEBUG -ErrorAction SilentlyContinue
+                }
+                $procInfo = Start-Logged -Name "gui-flask" -FilePath $PythonExe -ArgumentList @("-u", $entry)
+            } finally {
+                if ($previousFlaskDebug) {
+                    $env:FLASK_DEBUG = $previousFlaskDebug.Value
+                } else {
+                    Remove-Item Env:FLASK_DEBUG -ErrorAction SilentlyContinue
+                }
+            }
+            Register-ManagedProcess -ProcessInfo $procInfo | Out-Null
+            Write-Log "Flask UI available at http://127.0.0.1:5000" "SUCCESS"
+            Launch-GuiBrowser -Url "http://127.0.0.1:5000"
+            if ($procInfo.StdoutLog) {
+                Start-LogMonitor -Name "gui-flask-out" -Path $procInfo.StdoutLog
+            }
+            if ($procInfo.StderrLog) {
+                Start-LogMonitor -Name "gui-flask-err" -Path $procInfo.StderrLog
+            }
+        }
         "streamlit" {
             $entry = Join-Path $PSScriptRoot $StreamlitEntry
             if (-not (Test-Path $entry)) { throw "Streamlit entry not found at $entry" }
@@ -591,7 +823,7 @@ function Start-Gui {
             Launch-GuiBrowser -Url "http://127.0.0.1:7860"
         }
         default {
-            throw "Unsupported GuiMode '$GuiMode'. Use streamlit, fastapi, or gradio."
+            throw "Unsupported GuiMode '$GuiMode'. Use flask, streamlit, fastapi, or gradio."
         }
     }
 }
@@ -647,6 +879,15 @@ if (Test-Path $StateFile) {
 }
 
 Load-DotEnv -Path $EnvFile
+
+if ($env:RUNBOT_SKIP_KAFKA) {
+    $flag = $env:RUNBOT_SKIP_KAFKA.ToLowerInvariant()
+    if ($flag -in @("1", "true", "yes")) {
+        $ManageKafkaStack = $false
+        Write-Log "RUNBOT_SKIP_KAFKA set – Kafka/ZooKeeper stack management disabled." "WARN"
+    }
+}
+
 $env:PREFECT_API_URL = $PREFECT_API_URL
 if ($DebugMode) {
     $env:PYTHONUNBUFFERED = "1"
@@ -654,6 +895,7 @@ if ($DebugMode) {
 }
 
 try {
+    Start-KafkaStack
     Initialize-Python
     Start-PrefectServer
     Ensure-WorkPool

@@ -1,0 +1,39 @@
+/* Sidebar styling */
+#sidebar-wrapper {
+  width: 240px;
+  min-height: 100vh;
+}
+
+#sidebar-wrapper .sidebar-heading {
+  font-size: 1.25rem;
+}
+
+#sidebar-wrapper .nav-link {
+  margin-bottom: 0.35rem;
+}
+
+#sidebar-wrapper .nav-link.active {
+  background-color: #0d6efd;
+}
+
+/* Ensure content scrolls nicely */
+#main-content {
+  overflow-x: auto;
+}
+
+#logOutput {
+  font-family: "Fira Code", "Courier New", monospace;
+  white-space: pre-wrap;
+}
+
+.card-header .btn {
+  float: right;
+}
+
+.orchestrations-table .input-group input[type="number"] {
+  min-width: 70px;
+}
+
+.orchestrations-table form {
+  align-items: center;
+}

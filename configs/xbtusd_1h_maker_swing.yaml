@@ -1,0 +1,138 @@
+data:
+  symbol: "XBTUSD"
+  start_date: "2023-01-01T00:00:00Z"
+  end_date: null
+  interval: "1h"
+  source: "bitmex"
+  cache_dir: "data/raw/bitmex"
+features:
+  indicators: ["sma", "ema", "rsi", "macd"]
+  sma_window: 10
+  ema_window: 21
+  rsi_window: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+model:
+  test_size: 0.2
+  random_state: 42
+  model_type: "random_forest"
+  n_estimators: 200
+  max_depth: 6
+  n_jobs: -1
+  model_dir: "models"
+backtest:
+  initial_capital: 10000
+  transaction_cost: 0.001
+  risk_free_rate: 0.01
+  position_capital_fraction: 0.03
+  max_total_capital_fraction: 0.09
+  max_position_units: 4
+  maker_fee_bps: 0.01
+  taker_fee_bps: 0.06
+  funding_rate_column: "fundingRate"
+  funding_accrual_hours: 8
+  signal_persistence_bars: 1
+  flip_cooldown_bars: 0
+  fallback_spread_bps: 5.0
+  backtest_min_lock: 0.2
+  entry_mode: "maker_post_only"
+  max_entry_wait_bars: 24
+  cancel_spread_bps: 18
+  reprice_on: ["new_bar", "top_of_book_change"]
+  reprice_tick_offset: 1.0
+  partial_fill_min_qty_frac: 0.25
+  allow_cross_after_timeout: false
+  min_hold_bars: 8
+  cooldown_bars_after_exit: 0
+  max_trades_per_day_side: 12
+  invert_side: false
+  enforce_gates: true
+  maker_ratio_target: 0.95
+  slippage_bps_target: 2.0
+  trades_per_day_target: 2.0
+  max_drawdown_floor: -0.12
+  min_gate_trades: 500
+  min_slippage_bps: 0.5
+filters:
+  allow_long: true
+  allow_short: true
+  min_atr_frac: 0.002
+  trend_slope_lookback: 48
+  min_trend_slope: 0.0
+  hysteresis_k_atr: 0.15
+risk:
+  trailing:
+    enabled: false
+    update:
+      HFT:
+        snapshots: 4
+      intraday:
+        on_bar_close: true
+      swing:
+        on_bar_close: true
+    k_atr:
+      stop:
+        HFT: 2.0
+        intraday: 3.0
+        swing: 4.0
+      take:
+        HFT: 1.0
+        intraday: 1.5
+        swing: 2.0
+    min_lock:
+      R_multiple: 1.0
+    floor_ceiling:
+      long:
+        min_px_distance_ticks: 1
+      short:
+        min_px_distance_ticks: 1
+    slippage_guard_bps: 5
+    max_updates_per_min: 60
+pipeline:
+  lookahead: 1
+  target_column: "target_return"
+  long_threshold: 0.5
+  short_threshold: 0.47
+  long_bands: [0.5, 0.6, 0.72]
+  short_bands: [0.47, 0.37, 0.24]
+modes:
+  - name: "scalping"
+    interval: "1m"
+    lookback_days: 2
+    description: "Sub-minute scalping on high-volatility conditions."
+    long_threshold: 0.6
+    short_threshold: 0.4
+    long_bands: [0.6, 0.7, 0.85]
+    short_bands: [0.4, 0.3, 0.15]
+    trend_weight: 0.7
+    volatility_weight: 1.5
+    position_fraction: 0.05
+    max_total_fraction: 0.2
+    max_position_units: 4
+  - name: "intraday"
+    interval: "5m"
+    lookback_days: 7
+    description: "Intraday trading on 1-15 minute bars."
+    long_threshold: 0.55
+    short_threshold: 0.45
+    long_bands: [0.55, 0.65, 0.8]
+    short_bands: [0.45, 0.35, 0.2]
+    trend_weight: 1.0
+    volatility_weight: 1.0
+    position_fraction: 0.1
+    max_total_fraction: 0.4
+    max_position_units: 3
+  - name: "swing"
+    interval: "1h"
+    lookback_days: 60
+    description: "Swing trading on hourly/daily bars."
+    long_threshold: 0.6
+    short_threshold: 0.4
+    long_bands: [0.6, 0.7]
+    short_bands: [0.4, 0.3]
+    trend_weight: 1.4
+    volatility_weight: 0.8
+    position_fraction: 0.2
+    max_total_fraction: 0.6
+    max_position_units: 2

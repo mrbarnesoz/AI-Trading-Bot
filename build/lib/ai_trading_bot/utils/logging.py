@@ -14,6 +14,8 @@ def configure_logging(log_level: int = logging.INFO, log_file: Optional[Path | s
 
     # Avoid duplicate handlers if configure_logging is called multiple times.
     if logger.handlers:
+        for handler in logger.handlers:
+            handler.setLevel(log_level)
         return
 
     console_handler = logging.StreamHandler()

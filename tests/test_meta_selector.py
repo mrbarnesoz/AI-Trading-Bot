@@ -17,10 +17,13 @@ weights:
     adx: 0.6
     vol_regime_high: 0.4
     spread_z: -0.4
+    signal_trend: 0.5
   S2:
     vwap_dev_z: 1.0
     adx: -0.6
     vol_regime_low: 0.5
+    signal_mean_reversion: 0.6
+    prob_mean_reversion: 0.4
   S3:
     funding_z: -1.0
     oi_mom: 0.6
@@ -81,9 +84,19 @@ def _base_context(**overrides):
             "funding_z": 0.0,
             "vwap_dev_z": 0.0,
             "latency_ok": 1.0,
+            "signal_trend": 0.0,
+            "signal_mean_reversion": 0.0,
+            "prob_mean_reversion": 0.5,
         },
         model_outputs={"p_long": 0.6, "p_short": 0.3, "p_hold": 0.1},
-        market_state={"spread_z": 0.2, "latency_watchdog": 0.0, "funding_z": 0.0, "vol_regime": "low"},
+        market_state={
+            "spread_z": 0.2,
+            "latency_watchdog": 0.0,
+            "funding_z": 0.0,
+            "vol_regime": "low",
+            "signal_mean_reversion": 0.0,
+            "prob_mean_reversion": 0.5,
+        },
         risk_state={"liquidity_buffer_to_atr": 10.0, "daily_pnl_pct": 0.0, "current_leverage": 0.0},
     )
     for key, value in overrides.items():

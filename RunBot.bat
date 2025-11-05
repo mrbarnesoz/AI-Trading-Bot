@@ -57,7 +57,14 @@ echo Virtual environment ready.
 exit /b 0
 
 :run
-"%PWSH_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%RunBot.ps1" %*
+echo.
+echo Resetting Python bytecode caches...
+"%PWSH_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+  "$root = [System.IO.Path]::GetFullPath('%SCRIPT_DIR%');" ^
+  "$venv = Join-Path $root '.venv';" ^
+  "Get-ChildItem -Path $root -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue | Where-Object { -not $_.FullName.StartsWith($venv, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { } };" ^
+  "Get-ChildItem -Path $root -Recurse -File -Include '*.pyc','*.pyo' -ErrorAction SilentlyContinue | Where-Object { -not $_.DirectoryName.StartsWith($venv, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { } };"
+"%PWSH_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT_DIR%RunBot.ps1" %*
 set "RB_EXIT=%ERRORLEVEL%"
 if not "%RB_EXIT%"=="0" (
     echo.
@@ -69,7 +76,6 @@ exit /b 0
 
 :pauseexit
 echo.
-echo Press any key to close this window.
-pause >nul
+echo Exiting RunBot.
 endlocal
 exit /b 1

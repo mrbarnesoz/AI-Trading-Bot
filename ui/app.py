@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -200,6 +201,71 @@ def runbot_status_dot(name: str, processes: List[Dict[str, Any]]) -> Dict[str, s
     return {"label": status, "color": color, "tooltip": tooltip}
 
 
+def get_last_etl_info() -> Dict[str, Any] | None:
+    info = st.session_state.get("last_etl_info")
+    if info:
+        return info
+    return None
+
+
+def get_last_training_metrics() -> Dict[str, Any]:
+    metrics = st.session_state.get("last_training_metrics")
+    if metrics:
+        return metrics
+    return load_json(LATEST_MODEL_METADATA)
+
+
+def get_last_backtest_payload() -> Dict[str, Any]:
+    payload = st.session_state.get("last_backtest_payload")
+    if payload:
+        return payload
+    return load_json(LATEST_BACKTEST_FILE)
+
+
+def get_last_backtest_equity() -> pd.DataFrame | None:
+    equity = st.session_state.get("last_backtest_equity")
+    if equity is not None:
+        return equity
+    return None
+
+
+def get_last_qc_summary() -> Dict[str, Any]:
+    summary = st.session_state.get("last_qc_summary")
+    if summary:
+        return summary
+    return load_json(RESULTS_ROOT / "qc_summary.json")
+
+
+def run_qc_checks() -> Dict[str, Any]:
+    bronze = PROJECT_ROOT / "data" / "bronze"
+    silver = PROJECT_ROOT / "data" / "silver"
+    qc_result_path = RESULTS_ROOT / "qc_summary.json"
+    if not bronze.exists() or not silver.exists():
+        message = "Bronze and silver folders not found. Run a data update first."
+        append_action_log("Quality Check", "warning", message)
+        raise FileNotFoundError(message)
+    command = [
+        sys.executable,
+        "-m",
+        "jobs.qc_check",
+        "--bronze-root",
+        str(bronze),
+        "--silver-root",
+        str(silver),
+        "--output-json",
+        str(qc_result_path),
+    ]
+    completed = subprocess.run(command, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if completed.returncode != 0:
+        error = completed.stderr.strip() or completed.stdout.strip() or "Quality check failed."
+        append_action_log("Quality Check", "error", error)
+        raise RuntimeError(error)
+    summary = load_json(qc_result_path)
+    st.session_state["last_qc_summary"] = summary
+    append_action_log("Quality Check", "success", "Quality check finished successfully.")
+    return summary
+
+
 def list_training_runs() -> List[Tuple[str, Dict[str, Any]]]:
     runs: list[Tuple[str, Dict[str, Any]]] = []
     latest = load_json(LATEST_MODEL_METADATA)
@@ -246,19 +312,43 @@ def list_backtest_runs() -> List[Tuple[str, Dict[str, Any]]]:
     return unique
 
 
-def run_etl(force_download: bool = True) -> None:
+def run_etl(force_download: bool = True) -> Dict[str, Any]:
     config = load_config(CONFIG_PATH)
     price_frame, engineered = prepare_dataset(config, force_download=force_download)
+    start_ts = pd.Timestamp(price_frame.index.min())
+    end_ts = pd.Timestamp(price_frame.index.max())
+    if start_ts.tzinfo is None:
+        start_ts = start_ts.tz_localize("UTC")
+    else:
+        start_ts = start_ts.tz_convert("UTC")
+    if end_ts.tzinfo is None:
+        end_ts = end_ts.tz_localize("UTC")
+    else:
+        end_ts = end_ts.tz_convert("UTC")
+    start_text = start_ts.strftime("%Y-%m-%d %H:%M UTC")
+    end_text = end_ts.strftime("%Y-%m-%d %H:%M UTC")
+    info = {
+        "symbol": config.data.symbol,
+        "interval": config.data.interval,
+        "rows": int(engineered.shape[0]),
+        "start": start_text,
+        "end": end_text,
+    }
+    st.session_state["last_etl_info"] = info
+    st.session_state["last_price_frame"] = price_frame
+    st.session_state["last_engineered_frame"] = engineered
     message = (
-        f"Symbol {config.data.symbol} | {engineered.shape[0]} rows | Interval {config.data.interval} | "
-        f"Prices span {price_frame.index.min()} to {price_frame.index.max()}"
+        f"Prepared {info['rows']} rows for {info['symbol']} ({info['interval']}). "
+        f"Data spans {info['start']} to {info['end']}."
     )
     append_action_log("Run ETL", "success", message)
-    st.success(f"ETL complete. {message}")
+    st.success(f"Data update complete. {message}")
+    return info
 
 
 def run_training(force_download: bool = False) -> Dict[str, Any]:
     metrics = pipeline_train(CONFIG_PATH, force_download=force_download)
+    st.session_state["last_training_metrics"] = metrics
     append_action_log(
         "Train Model",
         "success",
@@ -296,6 +386,11 @@ def run_backtest(
     save_backtest_summary(payload)
     sharpe = payload["summary"].get("sharpe_ratio", 0.0)
     append_action_log("Backtest", "success", f"Sharpe {sharpe:.2f}")
+    st.session_state["last_backtest_payload"] = payload
+    st.session_state["last_backtest_equity"] = result.equity_curve.to_frame("Equity")
+    st.session_state["last_backtest_performance"] = result.performance
+    if hasattr(strategy_output, "decisions"):
+        st.session_state["last_meta_decisions"] = getattr(strategy_output, "decisions")
     st.session_state["selected_backtest_option"] = None
     return payload
 
@@ -304,94 +399,388 @@ def render_action_log_card() -> None:
     logs = st.session_state.get("action_logs", [])
     if not logs:
         return
-    with st.expander("Recent actions", expanded=False):
+    with st.expander("Recent activity", expanded=False):
         for entry in logs:
-            st.markdown(f"**{entry['timestamp']}** — {entry['title']} ({entry['status']})")
+            st.markdown(f"**{entry['timestamp']}** - {entry['title']} ({entry['status']})")
             st.code(entry["message"], language="text")
 
 
-def render_overview() -> None:
-    st.subheader("Overview")
+def render_control_center() -> None:
+    st.subheader("Control Center")
+    render_health_cards()
+    render_quick_wizard()
+    render_scenario_sandbox()
+    render_action_log_card()
+
+
+def render_health_cards() -> None:
+    st.markdown("#### At-a-Glance Health")
     state = fetch_runbot_state()
     processes = state.get("Processes") or state.get("processes") or []
-    col_a, col_b, col_c = st.columns([1.2, 1.3, 1.5])
+    col_services, col_data, col_model, col_trading = st.columns(4)
 
-    with col_a:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">RunBot Health</div>', unsafe_allow_html=True)
-        for key, label in {
-            "prefect-server": "Prefect Server",
-            "prefect-worker": "Prefect Worker",
-            "gui-streamlit": "GUI",
-        }.items():
-            meta = runbot_status_dot(key, processes)
-            render_status_dot(label, meta["color"], meta["tooltip"])
-        timestamp = state.get("Timestamp") or state.get("timestamp")
-        if timestamp:
-            st.caption(f"Last update: {format_timestamp(timestamp)}")
-        st.markdown('</div>', unsafe_allow_html=True)
+    service_items: List[str] = []
+    for internal_name, display_name in {
+        "prefect-server": "Prefect Server",
+        "prefect-worker": "Prefect Worker",
+        "gui-streamlit": "GUI Process",
+    }.items():
+        meta = runbot_status_dot(internal_name, processes)
+        service_items.append(
+            f"<li><strong>{display_name}</strong>: {meta['label']} ({meta['tooltip']})</li>"
+        )
+    services_html = "".join(service_items) or "<li>No service information yet.</li>"
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="card-title">System Services</div>
+            <ul>{services_html}</ul>
+            <p style="color:var(--text-muted); margin-top:0.5rem;">All services should show Running before live trading.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with col_b:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Quick Actions</div>', unsafe_allow_html=True)
-        qa_col1, qa_col2 = st.columns(2)
-        with qa_col1:
-            if st.button("Run ETL", key="qa_run_etl", use_container_width=True):
-                with st.spinner("Running ETL..."):
-                    run_etl(force_download=True)
-            if st.button("Backtest", key="qa_backtest", use_container_width=True):
-                with st.spinner("Running backtest..."):
-                    run_backtest()
-        with qa_col2:
-            if st.button("Train Model", key="qa_train", use_container_width=True):
-                with st.spinner("Training model..."):
-                    run_training()
-            if st.button("Run QC", key="qa_qc", use_container_width=True):
-                qc_result_path = RESULTS_ROOT / "qc_summary.json"
-                bronze = PROJECT_ROOT / "data" / "bronze"
-                silver = PROJECT_ROOT / "data" / "silver"
-                if bronze.exists() and silver.exists():
-                    import subprocess
+    etl_info = get_last_etl_info()
+    if etl_info:
+        data_body = (
+            f"<p>Last update prepared <strong>{etl_info['rows']:,}</strong> rows for {etl_info['symbol']} "
+            f"({etl_info['interval']}).</p>"
+            f"<p>Data window: {etl_info['start']} to {etl_info['end']} (UTC).</p>"
+        )
+    else:
+        data_body = '<p>No data refresh recorded yet. Use the "Fresh Data Update" scenario below.</p>'
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="card-title">Data Freshness</div>
+            {data_body}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-                    command = [
-                        sys.executable,
-                        "-m",
-                        "jobs.qc_check",
-                        "--bronze-root",
-                        str(bronze),
-                        "--silver-root",
-                        str(silver),
-                        "--output-json",
-                        str(qc_result_path),
-                    ]
-                    with st.spinner("Running QC checks..."):
-                        completed = subprocess.run(command, cwd=PROJECT_ROOT, capture_output=True, text=True)
-                    if completed.returncode == 0:
-                        append_action_log("QC", "success", "QC checks complete.")
-                        st.success("QC checks finished. Inspect qc_summary.json for details.")
-                    else:
-                        append_action_log("QC", "error", completed.stderr.strip() or "QC failed")
-                        st.error("QC checks failed; see console for details.")
-                else:
-                    st.warning("Expected bronze/silver directories not found; run the ETL pipeline first.")
-        st.markdown('</div>', unsafe_allow_html=True)
+    metrics = get_last_training_metrics()
+    if metrics:
+        accuracy = metrics.get("accuracy")
+        precision = metrics.get("precision")
+        recall = metrics.get("recall")
+        accuracy_text = f"{accuracy:.2%}" if isinstance(accuracy, (int, float)) else "--"
+        precision_text = f"{precision:.2%}" if isinstance(precision, (int, float)) else "--"
+        recall_text = f"{recall:.2%}" if isinstance(recall, (int, float)) else "--"
+        trained_at = format_timestamp(metrics.get("trained_at"))
+        model_body = (
+            f"<p>Model type: {metrics.get('model', 'Unknown')}.</p>"
+            f"<p>Accuracy: {accuracy_text} | Precision: {precision_text} | Recall: {recall_text}.</p>"
+            f"<p>Most recent training run: {trained_at}.</p>"
+        )
+    else:
+        model_body = "<p>No training run found. Run the model step in the wizard to create one.</p>"
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="card-title">Model Readiness</div>
+            {model_body}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with col_c:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">System Environment</div>', unsafe_allow_html=True)
-        env_cols = st.columns(4)
-        metadata = {
-            "Python": sys.version.split()[0],
-            "Prefect": state.get("prefect_version", "3.x"),
-            "Work Pool": state.get("work_pool", "bitmex"),
-            "GUI Mode": state.get("gui_mode", "streamlit"),
-        }
-        for idx, (key, value) in enumerate(metadata.items()):
-            with env_cols[idx % 4]:
-                st.metric(key, value)
-        st.markdown('</div>', unsafe_allow_html=True)
+    backtest_payload = get_last_backtest_payload()
+    summary = backtest_payload.get("summary", {}) if backtest_payload else {}
+    sharpe = summary.get("sharpe_ratio")
+    total_return = summary.get("total_return")
+    sharpe_text = f"{sharpe:.2f}" if isinstance(sharpe, (int, float)) else "--"
+    total_return_text = f"{total_return:.2%}" if isinstance(total_return, (int, float)) else "--"
+    live_status = st.session_state.get("live_agent_status", "Not started")
+    if summary:
+        trading_body = (
+            f"<p>Sharpe (risk-adjusted reward): {sharpe_text}.</p>"
+            f"<p>Total return: {total_return_text}.</p>"
+            f"<p>Live agent status: {live_status}.</p>"
+        )
+    else:
+        trading_body = (
+            f"<p>No backtest run yet. Run the backtest step first.</p>"
+            f"<p>Live agent status: {live_status}.</p>"
+        )
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="card-title">Trading Readiness</div>
+            {trading_body}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    render_action_log_card()
+
+def render_quick_wizard() -> None:
+    st.markdown("#### Guided Quick Start")
+    st.caption("Work through each step in order. Every button explains what it does and stores the result for the dashboard.")
+    steps = [
+        {
+            "title": "Step 1 - Download fresh BitMEX data",
+            "description": "Fetch the latest candles and funding rates, then rebuild the clean dataset.",
+            "button_label": "Run data update",
+            "spinner": "Downloading and preparing data...",
+            "success": "Data refresh complete.",
+            "error": "Data refresh failed:",
+            "key": "wizard_data",
+            "action": lambda: run_etl(force_download=True),
+        },
+        {
+            "title": "Step 2 - Run Quality Check (QC)",
+            "description": "Scan the prepared data for gaps or anomalies and log a Quality Check (QC) report.",
+            "button_label": "Run quality check",
+            "spinner": "Running quality checks...",
+            "success": "Quality check finished.",
+            "error": "Quality check failed:",
+            "key": "wizard_qc",
+            "action": run_qc_checks,
+        },
+        {
+            "title": "Step 3 - Train or refresh the model",
+            "description": "Train the machine learning model with the latest engineered features.",
+            "button_label": "Train model",
+            "spinner": "Training model...",
+            "success": "Model training complete.",
+            "error": "Model training failed:",
+            "key": "wizard_train",
+            "action": lambda: run_training(force_download=False),
+        },
+        {
+            "title": "Step 4 - Backtest with current settings",
+            "description": "Evaluate recent performance using the configured thresholds and cost model.",
+            "button_label": "Run backtest",
+            "spinner": "Running backtest...",
+            "success": "Backtest complete.",
+            "error": "Backtest failed:",
+            "key": "wizard_backtest",
+            "action": run_backtest,
+        },
+        {
+            "title": "Step 5 - Start or stop the live agent",
+            "description": "Launch or stop live trading after the earlier steps succeed.",
+            "button_label": None,
+            "key": "wizard_live",
+            "action": None,
+        },
+    ]
+
+    st.session_state.setdefault("wizard_step", 0)
+    if len(st.session_state.get("wizard_progress", [])) != len(steps):
+        st.session_state["wizard_progress"] = [False] * len(steps)
+    st.session_state.setdefault("wizard_results", {})
+
+    progress = st.session_state["wizard_progress"]
+    current_step = max(0, min(st.session_state["wizard_step"], len(steps) - 1))
+    st.session_state["wizard_step"] = current_step
+    step = steps[current_step]
+
+    status_labels: List[str] = []
+    for idx, step_info in enumerate(steps):
+        if progress[idx]:
+            marker = "[done]"
+        elif idx == current_step:
+            marker = "[in progress]"
+        else:
+            marker = "[pending]"
+        status_labels.append(f"{marker} {step_info['title']}")
+    st.markdown("\n".join(status_labels))
+
+    st.markdown(f"**{step['title']}**")
+    st.write(step["description"])
+
+    if step.get("action"):
+        if st.button(step["button_label"] or "Run step", key=f"wizard_run_{current_step}"):
+            try:
+                with st.spinner(step.get("spinner", "Working...")):
+                    result = step["action"]()
+                st.session_state["wizard_results"][step["key"]] = result
+                progress[current_step] = True
+                st.success(step.get("success", "Step completed."))
+            except Exception as exc:
+                progress[current_step] = False
+                st.error(f"{step.get('error', 'Step failed:')} {exc}")
+    else:
+        render_live_agent_controls()
+        progress[current_step] = st.session_state.get("live_agent_status") in {"running", "stopped"}
+
+    result = st.session_state["wizard_results"].get(step["key"])
+    if result and step["key"] == "wizard_data":
+        st.caption("Latest data update stored. See the chart in the scenario section for a preview.")
+    elif result and step["key"] == "wizard_qc":
+        total_warnings = len(result.get("trade_warnings", [])) + len(result.get("snapshot_warnings", []))
+        st.caption(f"Quality Check Warnings: {total_warnings}.")
+    elif result and step["key"] == "wizard_train":
+        st.caption(f"Model accuracy: {result.get('accuracy', 0):.2%}.")
+    elif result and step["key"] == "wizard_backtest":
+        sharpe = result.get("summary", {}).get("sharpe_ratio")
+        st.caption(f"Backtest Sharpe: {sharpe:.2f}" if sharpe is not None else "Backtest summary saved.")
+
+    prev_col, next_col = st.columns(2)
+    if prev_col.button("Previous step", disabled=current_step == 0):
+        st.session_state["wizard_step"] = current_step - 1
+        st.experimental_rerun()
+    can_advance = progress[current_step] or current_step == len(steps) - 1
+    if next_col.button(
+        "Next step" if current_step < len(steps) - 1 else "Stay here",
+        disabled=not can_advance or current_step == len(steps) - 1,
+    ):
+        st.session_state["wizard_step"] = min(current_step + 1, len(steps) - 1)
+        st.experimental_rerun()
+
+
+def render_live_agent_controls() -> None:
+    st.info(
+        "To start the live agent, open a PowerShell 7 window and run:\n\n"
+        "`prefect worker start --pool \"bitmex\"`\n\n"
+        "Then, in another window, run:\n\n"
+        "`python -m deployment.live_agent_runner --config conf/live_agent.yaml --api-client live.execution.bitmex:BitmexClient`\n\n"
+        "Use the buttons below to record the agent status for the dashboard."
+    )
+    st.session_state.setdefault("live_agent_status", "Not started")
+    col_start, col_stop = st.columns(2)
+    if col_start.button("Mark live agent as running"):
+        st.session_state["live_agent_status"] = "running"
+        append_action_log("Live Agent", "success", "Live agent marked as running.")
+        st.success("Status updated to running.")
+    if col_stop.button("Mark live agent as stopped"):
+        st.session_state["live_agent_status"] = "stopped"
+        append_action_log("Live Agent", "warning", "Live agent marked as stopped.")
+        st.info("Status updated to stopped.")
+    st.caption(f"Recorded status: {st.session_state['live_agent_status']}")
+
+
+def render_scenario_sandbox() -> None:
+    st.markdown("#### Ready-Made Scenarios")
+    st.caption("Pick a card to run a pre-configured workflow. Results and quick charts display in the card.")
+    st.session_state.setdefault("scenario_results", {})
+
+    scenarios = [
+        {
+            "title": "Fresh Data Update",
+            "description": "Downloads new BitMEX bars and funding data, then rebuilds the dataset.",
+            "button": "Run data update",
+            "spinner": "Refreshing data...",
+            "success": "Data update finished.",
+            "error": "Unable to refresh data:",
+            "key": "scenario_data",
+            "action": lambda: {
+                "info": run_etl(force_download=True),
+                "price": st.session_state.get("last_price_frame"),
+            },
+            "renderer": render_scenario_data,
+        },
+        {
+            "title": "Train and Test Model",
+            "description": "Retrains the model with the latest features and shows key accuracy metrics.",
+            "button": "Train model",
+            "spinner": "Training model...",
+            "success": "Model training complete.",
+            "error": "Model training failed:",
+            "key": "scenario_train",
+            "action": lambda: {"metrics": run_training(force_download=False)},
+            "renderer": render_scenario_training,
+        },
+        {
+            "title": "Risk and Quality Check",
+            "description": "Runs the Quality Check (QC) pipeline to spot data anomalies.",
+            "button": "Run quality check",
+            "spinner": "Running quality check...",
+            "success": "Quality check complete.",
+            "error": "Quality check failed:",
+            "key": "scenario_qc",
+            "action": lambda: {"summary": run_qc_checks()},
+            "renderer": render_scenario_qc,
+        },
+        {
+            "title": "Backtest with Safer Settings",
+            "description": "Backtests using tighter entry/exit thresholds to emphasise capital preservation.",
+            "button": "Run safer backtest",
+            "spinner": "Running backtest...",
+            "success": "Backtest complete.",
+            "error": "Backtest failed:",
+            "key": "scenario_backtest",
+            "action": lambda: {
+                "payload": run_backtest(long_threshold=0.65, short_threshold=0.35),
+                "equity": get_last_backtest_equity(),
+            },
+            "renderer": render_scenario_backtest,
+        },
+    ]
+
+    for i in range(0, len(scenarios), 2):
+        columns = st.columns(2)
+        for column, scenario in zip(columns, scenarios[i:i + 2]):
+            with column:
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                st.markdown(f'<div class="card-title">{scenario["title"]}</div>', unsafe_allow_html=True)
+                st.write(scenario["description"])
+                if st.button(scenario["button"], key=f"{scenario['key']}_button"):
+                    try:
+                        with st.spinner(scenario["spinner"]):
+                            result = scenario["action"]()
+                        st.session_state["scenario_results"][scenario["key"]] = result
+                        st.success(scenario["success"])
+                    except Exception as exc:
+                        st.error(f"{scenario['error']} {exc}")
+                result = st.session_state["scenario_results"].get(scenario["key"])
+                if result:
+                    scenario["renderer"](result)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_scenario_data(result: Dict[str, Any]) -> None:
+    info = result.get("info", {})
+    price_frame = result.get("price")
+    if info:
+        st.caption(
+            f"Rows: {info.get('rows', 0):,} | Window: {info.get('start')} to {info.get('end')} (UTC)."
+        )
+    if isinstance(price_frame, pd.DataFrame) and "Close" in price_frame.columns:
+        preview = price_frame[["Close"]].tail(200)
+        st.line_chart(preview, height=140)
+
+
+def render_scenario_training(result: Dict[str, Any]) -> None:
+    metrics = result.get("metrics", {})
+    if not metrics:
+        return
+    cols = st.columns(3)
+    cols[0].metric("Accuracy (correct predictions)", f"{metrics.get('accuracy', 0):.2%}")
+    cols[1].metric("Precision (positive quality)", f"{metrics.get('precision', 0):.2%}")
+    cols[2].metric("Recall (coverage)", f"{metrics.get('recall', 0):.2%}")
+    st.caption(f"Latest training run: {format_timestamp(metrics.get('trained_at'))}")
+
+
+def render_scenario_qc(result: Dict[str, Any]) -> None:
+    summary = result.get("summary", {})
+    trade_warnings = len(summary.get("trade_warnings", []))
+    snapshot_warnings = len(summary.get("snapshot_warnings", []))
+    data = pd.DataFrame(
+        {"Warning Type": ["Trade alerts", "Snapshot alerts"], "Count": [trade_warnings, snapshot_warnings]}
+    ).set_index("Warning Type")
+    st.bar_chart(data, height=140)
+    total = trade_warnings + snapshot_warnings
+    if total == 0:
+        st.caption("No data issues detected.")
+    else:
+        st.caption(f"{total} potential issues need review.")
+
+
+def render_scenario_backtest(result: Dict[str, Any]) -> None:
+    payload = result.get("payload", {})
+    equity = result.get("equity")
+    summary = payload.get("summary", {})
+    cols = st.columns(2)
+    sharpe = summary.get("sharpe_ratio")
+    total_return = summary.get("total_return")
+    cols[0].metric("Sharpe (risk-adjusted reward)", f"{sharpe:.2f}" if sharpe is not None else "--")
+    cols[1].metric("Total return", f"{total_return:.2%}" if total_return is not None else "--")
+    if isinstance(equity, pd.DataFrame):
+        st.line_chart(equity.tail(200), height=140)
 
 
 def render_pipeline_stage(stage: Dict[str, str]) -> None:
@@ -402,61 +791,62 @@ def render_pipeline_stage(stage: Dict[str, str]) -> None:
         "failed": "var(--accent-red)",
         "pending": "var(--text-muted)",
     }
-    symbol_map = {
-        "success": "✓",
-        "running": "●",
-        "warning": "!",
-        "failed": "✗",
-        "pending": "○",
-    }
     color = color_map.get(stage.get("status", "pending"), "var(--text-muted)")
-    symbol = symbol_map.get(stage.get("status", "pending"), "○")
+    label_map = {
+        "success": "OK",
+        "running": "RUN",
+        "warning": "WARN",
+        "failed": "ERR",
+        "pending": "...",
+    }
+    label = label_map.get(stage.get("status", "pending"), "...")
     st.markdown(
         f"""
         <div class="card" style="text-align:center; border-left: 4px solid {color};">
             <div class="card-title" style="justify-content:center; gap:0.5rem;">
-                <span style="color:{color}; font-size:1.4rem;">{symbol}</span>
+                <span style="color:{color}; font-size:1rem;">{label}</span>
                 {stage.get('name', 'Stage')}
             </div>
             <p style="margin:0; color:var(--text-secondary);">{stage.get('detail', '')}</p>
         </div>
         """,
-        unsafe_allow_html=True)
+        unsafe_allow_html=True,
+    )
 
 
 def render_pipelines() -> None:
-    st.subheader("Pipelines")
+    st.subheader("Data and Training Jobs")
     raw_count = len(list((PROJECT_ROOT / "data" / "raw").rglob("*.csv")))
     bronze_count = len(list((PROJECT_ROOT / "data" / "bronze").rglob("*.parquet")))
     qc_summary = load_json(RESULTS_ROOT / "qc_summary.json")
 
     stages = [
         {
-            "name": "Download",
+            "name": "Download raw data",
             "status": "success" if raw_count else "pending",
-            "detail": f"Cached files: {raw_count}",
+            "detail": f"Cached CSV files: {raw_count}",
         },
         {
-            "name": "Normalize",
+            "name": "Prepare clean data",
             "status": "success" if bronze_count else "pending",
-            "detail": f"Parquet files: {bronze_count}",
+            "detail": f"Clean Parquet files: {bronze_count}",
         },
     ]
     if qc_summary:
         warn_count = len(qc_summary.get("trade_warnings", [])) + len(qc_summary.get("snapshot_warnings", []))
         stages.append(
             {
-                "name": "QC",
+                "name": "Quality Check (QC)",
                 "status": "warning" if warn_count else "success",
-                "detail": f"Warnings: {warn_count}",
+                "detail": f"Warnings to review: {warn_count}",
             }
         )
     else:
         stages.append(
             {
-                "name": "QC",
+                "name": "Quality Check (QC)",
                 "status": "pending",
-                "detail": "No QC summary on disk.",
+                "detail": "No QC summary found yet. Run the check to generate one.",
             }
         )
 
@@ -466,11 +856,11 @@ def render_pipelines() -> None:
             render_pipeline_stage(stage)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">QC Summary</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Quality Check (QC) Summary</div>', unsafe_allow_html=True)
     if qc_summary:
         st.json(qc_summary)
     else:
-        st.info("Run the QC check to generate qc_summary.json.")
+        st.info("Run the quality check to create qc_summary.json.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -485,8 +875,8 @@ def build_option_map(runs: List[Tuple[str, Dict[str, Any]]]) -> Tuple[List[str],
     return options, mapping
 
 
-def render_model_backtesting() -> None:
-    st.subheader("Model & Backtesting")
+def render_model_results() -> None:
+    st.subheader("Model Results and Backtests")
 
     training_runs = list_training_runs()
     training_options, training_map = build_option_map(training_runs)
@@ -512,7 +902,7 @@ def render_model_backtesting() -> None:
         if default_backtest not in backtest_options:
             default_backtest = backtest_options[0]
         selected_backtest = st.selectbox(
-            "Backtest runs",
+            "Backtest history",
             backtest_options,
             index=backtest_options.index(default_backtest),
             key="backtest_run_select",
@@ -525,43 +915,43 @@ def render_model_backtesting() -> None:
     col_left, col_right = st.columns(2)
     with col_left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Latest Training</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Most Recent Training Run</div>', unsafe_allow_html=True)
         if training_data:
-            st.metric("Model", training_data.get("model", "Unknown"))
-            st.metric("Accuracy", f"{training_data.get('accuracy', 0):.2%}")
-            st.metric("Precision", f"{training_data.get('precision', 0):.2%}")
-            st.metric("Recall", f"{training_data.get('recall', 0):.2%}")
-            st.caption(f"Trained: {format_timestamp(training_data.get('trained_at'))}")
-            st.markdown("**Features**")
+            st.metric("Model type", training_data.get("model", "Unknown"))
+            st.metric("Accuracy (correct predictions)", f"{training_data.get('accuracy', 0):.2%}")
+            st.metric("Precision (positive quality)", f"{training_data.get('precision', 0):.2%}")
+            st.metric("Recall (coverage)", f"{training_data.get('recall', 0):.2%}")
+            st.caption(f"Trained on: {format_timestamp(training_data.get('trained_at'))}")
+            st.markdown("**Input features used**")
             st.write(", ".join(training_data.get("features", [])) or "--")
         else:
             st.info("Train the model to populate this section.")
-        if st.button("Retrain Now", key="retrain_now"):
+        if st.button("Train model again", key="retrain_now"):
             with st.spinner("Retraining model..."):
                 run_training()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_right:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Regime Selector</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Mode Selection Summary</div>', unsafe_allow_html=True)
         if training_data:
-            st.metric("Active Regime", training_data.get("mode", "--"))
+            st.metric("Active mode", training_data.get("mode", "--"))
             mode_score = training_data.get("mode_score")
-            st.metric("Mode Score", f"{mode_score:.3f}" if mode_score is not None else "--")
+            st.metric("Mode score", f"{mode_score:.3f}" if mode_score is not None else "--")
         else:
-            st.info("Train the model to evaluate regime selection.")
+            st.info("Train the model to evaluate mode selection.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Backtest KPIs</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Backtest Summary (explained numbers)</div>', unsafe_allow_html=True)
     if backtest_data:
         summary = backtest_data.get("summary", {})
         metric_cols = st.columns(4)
         labels = [
-            ("Sharpe", summary.get("sharpe_ratio")),
-            ("Total Return", summary.get("total_return")),
-            ("Max Drawdown", summary.get("max_drawdown")),
-            ("Win Rate", summary.get("win_rate")),
+            ("Sharpe ratio (reward vs risk)", summary.get("sharpe_ratio")),
+            ("Total return", summary.get("total_return")),
+            ("Maximum drawdown", summary.get("max_drawdown")),
+            ("Win rate", summary.get("win_rate")),
         ]
         for col, (label, value) in zip(metric_cols, labels):
             with col:
@@ -569,7 +959,7 @@ def render_model_backtesting() -> None:
                 st.markdown(f'<div class="kpi-title">{label}</div>', unsafe_allow_html=True)
                 if value is None:
                     display_value = "--"
-                elif label in {"Sharpe"}:
+                elif "Sharpe" in label:
                     display_value = f"{value:.2f}"
                 else:
                     display_value = f"{value:.2%}"
@@ -585,14 +975,49 @@ def render_model_backtesting() -> None:
 
 
 def render_live_trading() -> None:
-    st.subheader("Live Trading")
+    st.subheader("Live Trading Controls")
+    st.caption("Use this page to review current live status and see any open trades captured to disk.")
+
+    status = st.session_state.get("live_agent_status", "Not started")
+    st.markdown(
+        f"""
+        <div class="card">
+            <div class="card-title">Recorded live agent status</div>
+            <p>The dashboard currently records the live agent as: <strong>{status}</strong>.</p>
+            <p>If this does not match reality, return to the Control Center wizard and update the status there.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">How to start or stop live trading</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        1. Start a Prefect worker so deployments can hand out tasks:
+           ```
+           prefect worker start --pool "bitmex"
+           ```
+        2. Launch the live agent (replace the API client path if you have a custom client):
+           ```
+           python -m deployment.live_agent_runner --config conf/live_agent.yaml --api-client live.execution.bitmex:BitmexClient
+           ```
+        3. When you shut the agent down, mark it as stopped in the Control Center so the health cards stay accurate.
+        """.strip()
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Open trades on disk</div>', unsafe_allow_html=True)
     trades_path = RESULTS_ROOT / "open_trades.json"
     trades = load_json(trades_path)
     if trades:
         rows = trades if isinstance(trades, list) else [trades]
+        st.caption("Data sourced from results/open_trades.json.")
         st.table(rows)
     else:
-        st.info("No open trade data available. Populate results/open_trades.json to enable this view.")
+        st.info("No open trade data available. Populate results/open_trades.json to view live positions.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def tail_file(path: Path, lines: int) -> str:
@@ -616,15 +1041,15 @@ def list_log_files() -> List[Path]:
 
 
 def render_logs() -> None:
-    st.subheader("Logs & Diagnostics")
+    st.subheader("Logs and Troubleshooting")
     log_files = list_log_files()
     if not log_files:
-        st.warning("No logs found in the logs/ directory yet.")
+        st.warning("No log files found in the logs/ folder yet.")
         return
     options = [p.name for p in log_files]
-    selected = st.selectbox("Select log file", options)
-    lines = st.slider("Tail lines", 50, 1000, 200, 50)
-    autorefresh = st.checkbox("Auto-refresh every 5 seconds", value=False)
+    selected = st.selectbox("Choose a log file", options)
+    lines = st.slider("Number of lines to show", 50, 1000, 200, 50)
+    autorefresh = st.checkbox("Refresh automatically every 5 seconds", value=False)
     log_path = next(p for p in log_files if p.name == selected)
     st.markdown('<div class="log-output">', unsafe_allow_html=True)
     st.text(tail_file(log_path, lines))
@@ -638,12 +1063,13 @@ def render_logs() -> None:
 def render_trailing_controls(config) -> None:
     trailing = config.risk.trailing
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Trailing Stops & Take-Profit</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Trailing Stops and Take-Profit</div>', unsafe_allow_html=True)
 
     summary_rows = []
     for regime_key, label in [("HFT", "HFT"), ("intraday", "Intraday"), ("swing", "Swing")]:
         summary_rows.append({"Regime": label, "Stop ATR": trailing.stop_multiplier(regime_key), "Take ATR": trailing.take_multiplier(regime_key)})
     st.dataframe(pd.DataFrame(summary_rows).set_index("Regime"))
+    st.caption("ATR stands for Average True Range and controls how far stops/trailing targets sit from price.")
 
     with st.form("trailing_form"):
         enabled = st.checkbox("Enable trailing risk controls", value=trailing.enabled)
@@ -655,10 +1081,10 @@ def render_trailing_controls(config) -> None:
                 take_val = st.number_input(f"{label} take ATR", min_value=0.1, value=float(trailing.take_multiplier(regime_key)), step=0.1, format="%.2f", key=f"trail_take_{regime_key}")
                 regime_inputs[regime_key] = (stop_val, take_val)
 
-        min_lock = st.number_input("Min R multiple before trailing activates", min_value=0.0, value=float(trailing.min_lock.get("R_multiple", 1.0)), step=0.1, format="%.2f")
+        min_lock = st.number_input("Minimum profit (R multiple) before trailing activates", min_value=0.0, value=float(trailing.min_lock.get("R_multiple", 1.0)), step=0.1, format="%.2f")
         guard = st.number_input("Slippage guard (bps)", min_value=0.0, value=float(trailing.slippage_guard_bps), step=1.0)
         max_updates = st.number_input("Max updates per minute", min_value=1, value=int(trailing.max_updates_per_min), step=1)
-        submitted = st.form_submit_button("Save Trailing Settings")
+        submitted = st.form_submit_button("Save trailing settings")
         if submitted:
             trailing.enabled = bool(enabled)
             trailing.k_atr.setdefault("stop", {})
@@ -670,7 +1096,7 @@ def render_trailing_controls(config) -> None:
             trailing.slippage_guard_bps = float(guard)
             trailing.max_updates_per_min = int(max_updates)
             save_config(config, CONFIG_PATH)
-            st.success("Trailing settings updated. Changes persist to config.yaml")
+            st.success("Trailing settings updated. Check config.yaml for the saved values.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -678,7 +1104,7 @@ def render_settings() -> None:
     st.subheader("Settings")
     config = load_config(CONFIG_PATH)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">config.yaml Summary</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">config.yaml quick summary</div>', unsafe_allow_html=True)
     if config:
         st.write(f"Symbol: {config.data.symbol}")
         st.write(f"Interval: {config.data.interval}")
@@ -695,22 +1121,22 @@ def render_settings() -> None:
     col_mode, col_runbot = st.columns(2)
     with col_mode:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">GUI Mode</div>', unsafe_allow_html=True)
-        st.radio("Select GUI Mode", ["Streamlit", "FastAPI", "Gradio"], index=0, key="gui_mode_radio")
-        st.info("Update GuiMode in RunBot.ps1 to apply changes.")
+        st.markdown('<div class="card-title">Choose interface mode</div>', unsafe_allow_html=True)
+        st.radio("Select interface mode", ["Streamlit", "FastAPI", "Gradio"], index=0, key="gui_mode_radio")
+        st.info("Update GuiMode in RunBot.ps1 to apply these changes.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_runbot:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">RunBot Toggles</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">RunBot options</div>', unsafe_allow_html=True)
         st.checkbox("Use Docker Agent", value=False)
         st.checkbox("Debug Mode", value=False)
         st.checkbox("Auto-start Worker", value=True)
-        st.caption("Edit RunBot.ps1 configuration to persist changes.")
+        st.caption("Edit RunBot.ps1 to make these toggles permanent.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">.env Preview</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">.env quick look</div>', unsafe_allow_html=True)
     env_path = PROJECT_ROOT / ".env"
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -734,24 +1160,24 @@ def main() -> None:
     sidebar_option = st.sidebar.radio(
         "Navigate",
         (
-            "Overview",
-            "Pipelines",
-            "Model & Backtesting",
+            "Control Center",
+            "Data and Training Jobs",
+            "Model Results",
             "Live Trading",
-            "Logs & Diagnostics",
+            "Logs and Troubleshooting",
             "Settings",
         ),
     )
 
-    if sidebar_option == "Overview":
-        render_overview()
-    elif sidebar_option == "Pipelines":
+    if sidebar_option == "Control Center":
+        render_control_center()
+    elif sidebar_option == "Data and Training Jobs":
         render_pipelines()
-    elif sidebar_option == "Model & Backtesting":
-        render_model_backtesting()
+    elif sidebar_option == "Model Results":
+        render_model_results()
     elif sidebar_option == "Live Trading":
         render_live_trading()
-    elif sidebar_option == "Logs & Diagnostics":
+    elif sidebar_option == "Logs and Troubleshooting":
         render_logs()
     elif sidebar_option == "Settings":
         render_settings()
@@ -759,3 +1185,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+

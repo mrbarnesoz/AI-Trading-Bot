@@ -1,0 +1,55 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.3
+    container_name: trading-bot-zookeeper
+    networks:
+      - kafka-net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: trading-bot-kafka
+    networks:
+      - kafka-net
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: trading-bot-zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://trading-bot-kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.3
+    depends_on:
+      zookeeper:
+        condition: service_started
+      kafka:
+        condition: service_started
+    networks:
+      - kafka-net
+    entrypoint: ["bash", "-c"]
+    command: >-
+      "until kafka-topics --bootstrap-server trading-bot-kafka:9092 --list >/dev/null 2>&1; do echo waiting for broker; sleep 2; done;
+       kafka-topics --create --if-not-exists --topic tradingview.alerts --bootstrap-server trading-bot-kafka:9092;
+       kafka-topics --create --if-not-exists --topic sentiment.signals --bootstrap-server trading-bot-kafka:9092;
+       tail -f /dev/null"
+
+networks:
+  kafka-net:
+    external: true
+
+volumes:
+  kafka-data:
+    driver: local

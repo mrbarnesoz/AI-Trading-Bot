@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-slate-950 text-slate-100">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Trading Bot Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                DEFAULT: "#6366f1",
+                dark: "#312e81",
+              },
+            },
+          },
+        },
+        darkMode: "class",
+      };
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ asset_version }}" />
+  </head>
+  <body class="min-h-screen bg-slate-950 text-slate-100">
+    <noscript>
+      <div class="p-4 bg-red-800 text-white text-center">JavaScript is required to run the trading dashboard.</div>
+    </noscript>
+    <div id="app-root" class="min-h-screen"></div>
+    {% block content %}{% endblock %}
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/dayjs@1/dayjs.min.js"></script>
+    <script crossorigin src="https://unpkg.com/dayjs@1/plugin/relativeTime.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="text/babel" data-presets="env,react" src="{{ url_for('static', filename='js/app.jsx') }}?v={{ asset_version }}"></script>
+  </body>
+</html>

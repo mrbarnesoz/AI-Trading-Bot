@@ -18,6 +18,7 @@ from live.risk.guardrails import RiskGuardrails, RiskLimits
 from live.risk.trailing import TrailingManager
 from live.state.checkpoint import StateCheckpoint
 from ai_trading_bot.config import TrailingConfig
+from ai_trading_bot.meta.select import MetaStrategySelector
 
 logger = logging.getLogger(__name__)
 
@@ -113,12 +114,21 @@ async def run_agent(args: argparse.Namespace) -> None:
     else:
         api_client = api_client_cls(**api_settings)
 
-    policy = DecisionPolicy(thresholds)
+    meta_selector = MetaStrategySelector()
+    policy = DecisionPolicy(thresholds, meta_selector=meta_selector)
     risk = RiskGuardrails(risk_limits)
     trailing_manager = TrailingManager(trailing_cfg, risk.positions)
     router = OrderRouter(api_client, trailing_manager=trailing_manager)
     checkpoint = StateCheckpoint(args.checkpoint, risk=risk)
-    agent = EmbeddedAgent(symbols_cfg, policy, risk, router, checkpoint, trailing=trailing_manager)
+    agent = EmbeddedAgent(
+        symbols_cfg,
+        policy,
+        risk,
+        router,
+        checkpoint,
+        trailing=trailing_manager,
+        meta_selector=meta_selector,
+    )
 
     await agent.start()
     if agent._tasks:

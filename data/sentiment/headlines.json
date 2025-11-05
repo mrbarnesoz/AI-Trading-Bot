@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": 1730716800,
+    "headline": "Bitcoin bulls eye breakout as BTC holds above critical moving average",
+    "symbols": ["BTCUSD", "XBTUSD"],
+    "source": "MockNews"
+  },
+  {
+    "timestamp": 1730720400,
+    "headline": "Ethereum faces regulatory headwinds; traders brace for potential drop",
+    "symbols": ["ETHUSD"],
+    "source": "MockNews"
+  },
+  {
+    "timestamp": 1730724000,
+    "headline": "Altcoin gains ignite optimism across DeFi sector",
+    "symbols": ["SOLUSD", "UNIUSD"],
+    "source": "MockNews"
+  }
+]

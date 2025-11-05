@@ -6,6 +6,7 @@ import argparse
 import json
 
 from ai_trading_bot.pipeline import backtest
+from ai_trading_bot.monitoring import MetricsCollector
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +35,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Probability at or below which to enter a short position (defaults to config).",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        help="Expose Prometheus metrics on this port.",
+    )
     return parser.parse_args()
 
 
@@ -59,6 +65,10 @@ def main() -> None:
     if hasattr(decisions, "iloc") and len(decisions) > 0:  # pragma: no branch - simple duck typing check
         latest = decisions.iloc[-1].to_dict()
         payload["latest_decision"] = latest
+    if args.metrics_port is not None:
+        collector = MetricsCollector()
+        collector.start_server(args.metrics_port)
+        collector.record_backtest(result.summary, metadata)
     print(json.dumps(payload, indent=2))
 
 

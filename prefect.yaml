@@ -1,0 +1,28 @@
+version: 3.0
+deployments:
+  - name: daily-bitmex
+    entrypoint: orchestration/prefect_flows.py:bitmex_daily_flow
+    parameters: {}
+    work_pool:
+      name: bitmex
+    schedule:
+      interval: 86400
+      anchor_date: "2023-01-01T00:00:00Z"
+      timezone: UTC
+  - name: etl-bitmex
+    entrypoint: orchestration/prefect_flows.py:bitmex_etl_flow
+    parameters: {}
+    work_pool:
+      name: bitmex
+  - name: qc-bitmex
+    entrypoint: orchestration/prefect_flows.py:bitmex_qc_flow
+    parameters: {}
+    work_pool:
+      name: bitmex
+  - name: auto-strategy-bitmex
+    entrypoint: orchestration/prefect_flows.py:bitmex_auto_strategy_flow
+    parameters:
+      min_trades: 150
+      top_k: 3
+    work_pool:
+      name: bitmex

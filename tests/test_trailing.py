@@ -84,23 +84,26 @@ def test_trailing_long_ratchets_stop_and_exits(tmp_path) -> None:
     assert pytest.approx(94.0, rel=1e-6) == sub.stop_price
 
     # Price rallies strongly (best_favorable up to 110)
-    rally_state = _state(price=110.0, atr=2.0, high=110.0, low=108.0, position=1.0, minute_offset=1)
+    rally_state = _state(price=110.0, atr=2.0, high=112.0, low=108.0, position=1.0, minute_offset=1)
     events = manager.update("XBTUSD", rally_state)
     assert events == []  # no exit yet
     assert sub.stop_price is not None and sub.stop_price >= 104.0  # floored by bar low
+    tp_price = sub.take_profit_price
+    assert tp_price is not None and tp_price > sub.stop_price
+    assert tp_price > sub.entry_price
 
-    # First drop triggers partial take profit
-    reversal_state = _state(price=sub.stop_price, atr=2.0, high=sub.stop_price + 0.5, low=sub.stop_price - 0.5, position=1.0, minute_offset=2)
-    events = manager.update("XBTUSD", reversal_state)
+    # Price extension to take-profit triggers partial exit
+    tp_state = _state(price=tp_price, atr=2.0, high=tp_price + 0.5, low=tp_price - 0.5, position=1.0, minute_offset=2)
+    events = manager.update("XBTUSD", tp_state)
     assert len(events) == 1
     event = events[0]
     assert event["exit_reason"] == "TTP_hit"
-    manager.record_execution("XBTUSD", event, reversal_state)
+    manager.record_execution("XBTUSD", event, tp_state)
     sub = manager._get_position("XBTUSD", "long")
     assert sub is not None
     assert sub.take_profit_price is None
 
-    # Further decline should trigger trailing stop on the remainder
+    # Subsequent decline should trigger trailing stop on the remainder
     final_state = _state(price=sub.stop_price, atr=2.0, high=sub.stop_price + 0.5, low=sub.stop_price - 0.5, position=sub.size * 1.0, minute_offset=3)
     events = manager.update("XBTUSD", final_state)
     assert len(events) == 1
@@ -154,12 +157,14 @@ def test_trailing_partial_take_profit_then_trail_only(tmp_path) -> None:
     manager.record_execution("XBTUSD", {"side": "buy", "size": 1.0}, entry_state)
     sub = manager._get_position("XBTUSD", "long")
 
-    rally_state = _state(price=112.0, atr=2.0, high=112.0, low=110.0, position=1.0, minute_offset=1)
+    rally_state = _state(price=112.0, atr=2.0, high=114.0, low=110.0, position=1.0, minute_offset=1)
     manager.update("XBTUSD", rally_state)
     assert sub.take_profit_price is not None
+    tp_price = sub.take_profit_price
+    assert tp_price is not None and tp_price > sub.entry_price
 
-    # Move to take profit level (below top but above stop)
-    tp_state = _state(price=sub.take_profit_price, atr=2.0, high=sub.take_profit_price + 0.5, low=sub.take_profit_price - 0.5, position=1.0, minute_offset=2)
+    # Move to take profit level
+    tp_state = _state(price=tp_price, atr=2.0, high=tp_price + 0.5, low=tp_price - 0.5, position=1.0, minute_offset=2)
     events = manager.update("XBTUSD", tp_state)
     assert len(events) == 1
     event = events[0]
@@ -183,17 +188,19 @@ def test_trailing_short_mirror_behaviour(tmp_path) -> None:
     initial_stop = sub.stop_price
     assert initial_stop and initial_stop > sub.entry_price
 
-    favorable_state = _state(price=90.0, atr=2.0, high=92.0, low=90.0, position=-1.0, minute_offset=1)
+    favorable_state = _state(price=90.0, atr=2.0, high=92.0, low=89.0, position=-1.0, minute_offset=1)
     manager.update("XBTUSD", favorable_state)
     assert sub.stop_price < initial_stop  # stop moves lower for shorts
+    tp_price = sub.take_profit_price
+    assert tp_price is not None and tp_price < sub.entry_price
 
-    reversal_state = _state(price=sub.stop_price, atr=2.0, high=sub.stop_price + 0.5, low=sub.stop_price - 0.5, position=-1.0, minute_offset=2)
-    events = manager.update("XBTUSD", reversal_state)
+    tp_state = _state(price=tp_price, atr=2.0, high=tp_price + 0.5, low=tp_price - 0.5, position=-1.0, minute_offset=2)
+    events = manager.update("XBTUSD", tp_state)
     assert len(events) == 1
     event = events[0]
     assert event["side"] == "buy"
     assert event["exit_reason"] == "TTP_hit"
-    manager.record_execution("XBTUSD", event, reversal_state)
+    manager.record_execution("XBTUSD", event, tp_state)
     sub = manager._get_position("XBTUSD", "short")
     assert sub is not None
     assert sub.take_profit_price is None
@@ -205,3 +212,21 @@ def test_trailing_short_mirror_behaviour(tmp_path) -> None:
     assert tsl_event["exit_reason"] == "TSL_hit"
     manager.record_execution("XBTUSD", tsl_event, final_state)
     assert manager.positions.net_position("XBTUSD") == 0.0
+
+
+def test_trailing_levels_oriented_correctly(tmp_path) -> None:
+    manager = _create_manager(tmp_path)
+    entry_state = _state(price=100.0, atr=2.0, high=101.0, low=99.0, position=0.0)
+    manager.record_execution("XBTUSD", {"side": "buy", "size": 1.0}, entry_state)
+    long_sub = manager._get_position("XBTUSD", "long")
+    assert long_sub is not None
+    assert long_sub.stop_price is not None and long_sub.stop_price < long_sub.entry_price
+    assert long_sub.take_profit_price is not None and long_sub.take_profit_price > long_sub.entry_price
+
+    manager.record_execution("XBTUSD", {"side": "sell", "size": 1.0}, entry_state)
+    manager.record_execution("XBTUSD", {"side": "sell", "size": 1.0}, entry_state)
+    short_sub = manager._get_position("XBTUSD", "short")
+    assert short_sub is not None
+    assert short_sub.stop_price is not None and short_sub.stop_price > short_sub.entry_price
+    assert short_sub.take_profit_price is not None and short_sub.take_profit_price < short_sub.entry_price
+

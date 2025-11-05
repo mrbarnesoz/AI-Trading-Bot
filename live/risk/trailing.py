@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,24 @@ from live.state.positions import PositionManager, SubPosition
 
 
 logger = logging.getLogger(__name__)
+
+_TP_SL_SENTINEL_LOGGED = False
+
+
+def sided_levels(best: float, atr: float, direction: int, k_tp: float, k_sl: float) -> Tuple[float, float]:
+    global _TP_SL_SENTINEL_LOGGED
+    if not _TP_SL_SENTINEL_LOGGED:
+        logger.warning("TP_SL_FIX_ACTIVE k_tp=%s k_sl=%s", k_tp, k_sl)
+        _TP_SL_SENTINEL_LOGGED = True
+    tp = best + direction * k_tp * atr
+    sl = best - direction * k_sl * atr
+    if direction == 1:
+        if not (tp > best and sl < best):
+            raise ValueError(f"SideError dir={direction} best={best} atr={atr} tp={tp} sl={sl}")
+    else:
+        if not (tp < best and sl > best):
+            raise ValueError(f"SideError dir={direction} best={best} atr={atr} tp={tp} sl={sl}")
+    return tp, sl
 
 
 @dataclass
@@ -60,6 +79,67 @@ class TrailingManager:
         self._buffer: Dict[str, List[Dict[str, Any]]] = {}
         self._flush_threshold = 100
         self._export_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics: Counter[str] = Counter()
+        logger.warning("TRAIL_INSTANCE id=%s", hex(id(self)))
+
+    @staticmethod
+    def _direction(side: str) -> int:
+        return 1 if side == "long" else -1
+
+    def _validate_levels(
+        self,
+        symbol: str,
+        side: str,
+        best: float,
+        stop: Optional[float],
+        take: Optional[float],
+        min_ticks: int,
+        tick_size: float,
+    ) -> bool:
+        min_gap = tick_size * max(1, min_ticks)
+        if stop is None:
+            return True
+        if side == "long":
+            if stop >= best:
+                logger.error("Invalid long stop for %s: stop %.4f >= best %.4f", symbol, stop, best)
+                self.metrics["side_errors"] += 1
+                return False
+            if take is not None:
+                if take <= best:
+                    logger.error("Invalid long take for %s: take %.4f <= best %.4f", symbol, take, best)
+                    self.metrics["side_errors"] += 1
+                    return False
+                if take - stop <= min_gap:
+                    logger.error(
+                        "Invalid long levels for %s: take %.4f - stop %.4f <= min_gap %.4f",
+                        symbol,
+                        take,
+                        stop,
+                        min_gap,
+                    )
+                    self.metrics["side_errors"] += 1
+                    return False
+        else:
+            if stop <= best:
+                logger.error("Invalid short stop for %s: stop %.4f <= best %.4f", symbol, stop, best)
+                self.metrics["side_errors"] += 1
+                return False
+            if take is not None:
+                if take >= best:
+                    logger.error("Invalid short take for %s: take %.4f >= best %.4f", symbol, take, best)
+                    self.metrics["side_errors"] += 1
+                    return False
+                if stop - take <= min_gap:
+                    logger.error(
+                        "Invalid short levels for %s: stop %.4f - take %.4f <= min_gap %.4f",
+                        symbol,
+                        stop,
+                        take,
+                        min_gap,
+                    )
+                    self.metrics["side_errors"] += 1
+                    return False
+        return True
 
     # ------------------------------------------------------------------
     # Public API
@@ -195,6 +275,10 @@ class TrailingManager:
         if price is None:
             return []
 
+        pre_events = self._check_triggers(symbol, sub, price)
+        if pre_events:
+            return pre_events
+
         high = self._resolve_high(market_state, price)
         low = self._resolve_low(market_state, price)
         atr = float(getattr(market_state, "atr", 0.0) or (sub.atr_at_entry or 0.0))
@@ -243,6 +327,27 @@ class TrailingManager:
         if not latency_ok:
             return self._check_triggers(symbol, sub, price)
 
+        if not sub.take_profit_active:
+            stop_before = sub.stop_price
+            take_before = sub.take_profit_price
+            sub.take_profit_active = True
+            changed = self._reprice_levels(sub, best_favourable, atr, stop_mult, take_mult, low, high, tick_size)
+            if changed and (stop_before != sub.stop_price or take_before != sub.take_profit_price):
+                self._record_update(
+                    symbol=symbol,
+                    sub=sub,
+                    best=best_favourable,
+                    atr=atr,
+                    stop_before=stop_before,
+                    stop_after=sub.stop_price,
+                    take_before=take_before,
+                    take_after=sub.take_profit_price,
+                    now=now,
+                    reason="trail_activate",
+                )
+            self._touch_update_counters(sub, now)
+            return []
+
         should_update = self._should_update(
             sub=sub,
             regime=regime,
@@ -256,8 +361,8 @@ class TrailingManager:
         if should_update:
             stop_before = sub.stop_price
             take_before = sub.take_profit_price
-            self._reprice_levels(sub, best_favourable, atr, stop_mult, take_mult, low, high, tick_size)
-            if stop_before != sub.stop_price or take_before != sub.take_profit_price:
+            changed = self._reprice_levels(sub, best_favourable, atr, stop_mult, take_mult, low, high, tick_size)
+            if changed and (stop_before != sub.stop_price or take_before != sub.take_profit_price):
                 self._record_update(
                     symbol=symbol,
                     sub=sub,
@@ -280,7 +385,7 @@ class TrailingManager:
 
         events: List[TrailingEvent] = []
         if sub.side == "long":
-            if sub.take_profit_active and sub.take_profit_price and price <= sub.take_profit_price:
+            if sub.take_profit_active and sub.take_profit_price and price >= sub.take_profit_price:
                 exit_size = sub.size * 0.5
                 remaining = max(sub.size - exit_size, 0.0)
                 events.append(
@@ -298,6 +403,7 @@ class TrailingManager:
                 sub.pending_exit = "TTP_hit"
                 sub.take_profit_price = None
                 sub.take_profit_active = False
+                self.metrics["exit_trailing_ttp"] += 1
             elif sub.stop_price and price <= sub.stop_price:
                 events.append(
                     TrailingEvent(
@@ -312,8 +418,9 @@ class TrailingManager:
                     )
                 )
                 sub.pending_exit = "TSL_hit"
+                self.metrics["exit_trailing_tsl"] += 1
         else:
-            if sub.take_profit_active and sub.take_profit_price and price >= sub.take_profit_price:
+            if sub.take_profit_active and sub.take_profit_price and price <= sub.take_profit_price:
                 exit_size = sub.size * 0.5
                 remaining = max(sub.size - exit_size, 0.0)
                 events.append(
@@ -331,6 +438,7 @@ class TrailingManager:
                 sub.pending_exit = "TTP_hit"
                 sub.take_profit_price = None
                 sub.take_profit_active = False
+                self.metrics["exit_trailing_ttp"] += 1
             elif sub.stop_price and price >= sub.stop_price:
                 events.append(
                     TrailingEvent(
@@ -345,22 +453,60 @@ class TrailingManager:
                     )
                 )
                 sub.pending_exit = "TSL_hit"
+                self.metrics["exit_trailing_tsl"] += 1
         return events
 
     def _seed_levels(self, sub: SubPosition, atr: float, tick_size: float) -> None:
+        self.metrics["seed_attempts"] += 1
         if atr <= 0:
             atr = sub.atr_at_entry or 0.0
+        if not atr or atr <= 0:
+            logger.error("Cannot seed trailing for %s due to non-positive ATR.", sub.id)
+            self.metrics["seed_failed_zero_atr"] += 1
+            raise ValueError(f"Cannot seed trailing for {sub.id}: ATR={atr}")
+
         regime = sub.regime
         stop_mult = self.config.stop_multiplier(regime, default=3.0)
         take_mult = self.config.take_multiplier(regime, default=1.5)
         best = sub.entry_price
-        sub.stop_price = self._initial_stop(sub, stop_mult, atr)
-        sub.initial_stop_price = sub.stop_price
-        sub.take_profit_price = self._initial_take(sub, take_mult, atr, sub.stop_price or sub.entry_price, tick_size, sub.side)
-        sub.take_profit_active = True
+        direction = self._direction(sub.side)
+        min_ticks = max(1, self.config.min_ticks("long" if sub.side == "long" else "short"))
+        min_gap = tick_size * min_ticks
+
+        try:
+            raw_tp, raw_sl = sided_levels(best, atr, direction, take_mult, stop_mult)
+        except ValueError as exc:
+            self.metrics["seed_side_errors"] += 1
+            logger.error("Failed to compute sided levels for %s: %s", sub.id, exc)
+            raise
+
+        if sub.side == "long":
+            stop_price = min(raw_sl, best - min_gap)
+            take_price = max(raw_tp, best + min_gap, stop_price + min_gap)
+        else:
+            stop_price = max(raw_sl, best + min_gap)
+            take_price = min(raw_tp, best - min_gap, stop_price - min_gap)
+
+        if not self._validate_levels(sub.id, sub.side, best, stop_price, take_price, min_ticks, tick_size):
+            self.metrics["seed_invalid_levels"] += 1
+            logger.error(
+                "Invalid seed levels for %s (best=%s stop=%s take=%s).",
+                sub.id,
+                best,
+                stop_price,
+                take_price,
+            )
+            raise ValueError(f"Invalid seed levels for {sub.id}: stop={stop_price} take={take_price}")
+
+        sub.stop_price = stop_price
+        sub.initial_stop_price = stop_price
+        sub.take_profit_price = take_price
+        sub.take_profit_active = False
         sub.best_favorable_price = best
         sub.best_adverse_price = best
         sub.pending_exit = None
+        self.metrics["seed_attached"] += 1
+        now = sub.last_update if isinstance(sub.last_update, datetime) else datetime.now(timezone.utc)
         self._record_update(
             symbol=sub.id,
             sub=sub,
@@ -384,51 +530,74 @@ class TrailingManager:
         low: float,
         high: float,
         tick_size: float,
-    ) -> None:
+    ) -> bool:
+        direction = self._direction(sub.side)
+        min_ticks = max(1, self.config.min_ticks("long" if sub.side == "long" else "short"))
+        min_gap = min_ticks * tick_size
+
         current_stop = sub.stop_price if sub.stop_price is not None else self._initial_stop(sub, stop_mult, atr)
-        current_take = sub.take_profit_price if sub.take_profit_price is not None else current_stop
+
+        try:
+            target_tp, target_sl = sided_levels(best, atr, direction, take_mult, stop_mult)
+        except ValueError as exc:
+            self.metrics["modify_side_errors"] += 1
+            logger.error("Sided level failure during reprice for %s: %s", sub.id, exc)
+            return False
 
         if sub.side == "long":
-            stop_candidate = max(current_stop, best - stop_mult * atr)
-            stop_candidate = min(stop_candidate, low)
-            stop_candidate = max(stop_candidate, current_stop)
-            min_ticks = self.config.min_ticks("long")
-            if current_stop is not None and self._ticks_between(stop_candidate, current_stop, tick_size) < min_ticks:
-                stop_candidate = current_stop
-            take_candidate = max(current_take, best - take_mult * atr)
-            take_candidate = max(take_candidate, stop_candidate + min_ticks * tick_size)
-            take_candidate = min(take_candidate, best)
+            stop_target = min(target_sl, low)
+            new_stop = stop_target if current_stop is None else max(current_stop, stop_target)
+            new_stop = min(new_stop, low)
+            if current_stop is not None and self._ticks_between(new_stop, current_stop, tick_size) < min_ticks:
+                new_stop = current_stop
         else:
-            stop_candidate = min(current_stop, best + stop_mult * atr)
-            stop_candidate = max(stop_candidate, high)
-            stop_candidate = min(stop_candidate, current_stop)
-            min_ticks = self.config.min_ticks("short")
-            if current_stop is not None and self._ticks_between(stop_candidate, current_stop, tick_size) < min_ticks:
-                stop_candidate = current_stop
-            take_candidate = min(current_take, best + take_mult * atr)
-            take_candidate = min(take_candidate, stop_candidate - min_ticks * tick_size)
-            take_candidate = max(take_candidate, best)
+            stop_target = max(target_sl, high)
+            new_stop = stop_target if current_stop is None else min(current_stop, stop_target)
+            new_stop = max(new_stop, high)
+            if current_stop is not None and self._ticks_between(new_stop, current_stop, tick_size) < min_ticks:
+                new_stop = current_stop
+
+        current_take = sub.take_profit_price
+        take_target = target_tp
+        if sub.side == "long":
+            take_target = max(take_target, new_stop + min_gap, best + min_gap)
+            new_take = take_target if current_take is None else max(current_take, take_target)
+        else:
+            take_target = min(take_target, new_stop - min_gap, best - min_gap)
+            new_take = take_target if current_take is None else min(current_take, take_target)
+
+        if not self._validate_levels(
+            sub.id,
+            sub.side,
+            best,
+            new_stop,
+            new_take if sub.take_profit_active else None,
+            min_ticks,
+            tick_size,
+        ):
+            logger.error(
+                "Skipping trailing update for %s due to invalid levels (best=%s, stop=%s, take=%s)",
+                sub.id,
+                best,
+                new_stop,
+                new_take,
+            )
+            self.metrics["modify_invalid_levels"] += 1
+            return False
 
         if sub.side == "long":
-            if stop_candidate > (sub.stop_price or float("-inf")):
-                sub.stop_price = stop_candidate
-            if sub.take_profit_active:
-                if sub.take_profit_price is not None:
-                    sub.take_profit_price = max(sub.take_profit_price, take_candidate)
-                else:
-                    sub.take_profit_price = take_candidate
-            else:
-                sub.take_profit_price = None
+            if sub.stop_price is None or new_stop > sub.stop_price:
+                sub.stop_price = new_stop
         else:
-            if stop_candidate < (sub.stop_price or float("inf")):
-                sub.stop_price = stop_candidate
-            if sub.take_profit_active:
-                if sub.take_profit_price is not None:
-                    sub.take_profit_price = min(sub.take_profit_price, take_candidate)
-                else:
-                    sub.take_profit_price = take_candidate
-            else:
-                sub.take_profit_price = None
+            if sub.stop_price is None or new_stop < sub.stop_price:
+                sub.stop_price = new_stop
+
+        if sub.take_profit_active:
+            sub.take_profit_price = new_take
+        else:
+            sub.take_profit_price = None
+        self.metrics["modify_success"] += 1
+        return True
 
     def _should_update(
         self,
@@ -493,6 +662,7 @@ class TrailingManager:
             "r_multiple": sub.r_multiple,
             "reason": reason,
         }
+        self.metrics[f"updates_{reason}"] += 1
         logger.debug("Trailing update: %s", json.dumps(record))
         date_key = now.strftime("%Y-%m-%d")
         self._buffer.setdefault(date_key, []).append(record)
@@ -525,6 +695,12 @@ class TrailingManager:
         sub.last_update = now
         sub.snapshots_since_update = 0
 
+    def snapshot_metrics(self, reset: bool = False) -> Dict[str, int]:
+        metrics = dict(self.metrics)
+        if reset:
+            self.metrics = Counter()
+        return metrics
+
     def _close_position(self, symbol: str, side: str) -> None:
         sub = self._get_position(symbol, side)
         if sub:
@@ -554,19 +730,26 @@ class TrailingManager:
         sub: SubPosition,
         take_mult: float,
         atr: float,
-        stop_price: float,
+        stop_price: Optional[float],
         tick_size: float,
         side: str,
     ) -> Optional[float]:
         if atr <= 0:
             return None
-        min_ticks = self.config.min_ticks("long" if side == "long" else "short")
+        direction = 1 if side == "long" else -1
+        min_ticks = max(1, self.config.min_ticks("long" if side == "long" else "short"))
+        min_gap = min_ticks * tick_size
+        base = sub.entry_price
+        candidate = base + direction * take_mult * atr
+
         if side == "long":
-            candidate = sub.entry_price - take_mult * atr
-            candidate = max(candidate, stop_price + min_ticks * tick_size)
-            return candidate
-        candidate = sub.entry_price + take_mult * atr
-        candidate = min(candidate, stop_price - min_ticks * tick_size)
+            candidate = max(candidate, base + min_gap)
+            if stop_price is not None:
+                candidate = max(candidate, stop_price + min_gap)
+        else:
+            candidate = min(candidate, base - min_gap)
+            if stop_price is not None:
+                candidate = min(candidate, stop_price - min_gap)
         return candidate
 
     def _risk_per_unit(self, sub: SubPosition, initial_stop: Optional[float]) -> float:
@@ -614,3 +797,4 @@ class TrailingManager:
 
 
 __all__ = ["TrailingEvent", "TrailingManager"]
+

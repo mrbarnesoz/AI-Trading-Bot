@@ -15,6 +15,7 @@ from prefect import flow, get_run_logger, task
 from prefect.events import emit_event
 
 from monitoring.alerts import send_notification
+from orchestration.auto_research import run_auto_research
 from orchestration.block_helpers import load_json_block
 from orchestration.config_utils import build_config
 from utils.config import load_yaml
@@ -111,7 +112,6 @@ def build_snapshots() -> None:
     logger = get_run_logger()
     cmd = [sys.executable, "-m", "jobs.build_snapshots"]
     logger.info("Running %s", " ".join(cmd))
-    logger.info("Symbols provided: %s", list(symbols))
     _run_command(cmd)
 
 
@@ -120,7 +120,6 @@ def resample_bars() -> None:
     logger = get_run_logger()
     cmd = [sys.executable, "-m", "jobs.run_pipeline"]
     logger.info("Running %s", " ".join(cmd))
-    logger.info("Symbols provided: %s", list(symbols))
     _run_command(cmd)
 
 
@@ -143,7 +142,6 @@ def run_qc(storage_config: Path) -> dict:
         str(qc_path),
     ]
     logger.info("Running %s", " ".join(cmd))
-    logger.info("Symbols provided: %s", list(symbols))
     _run_command(cmd)
     if qc_path.exists():
         summary = json.loads(qc_path.read_text(encoding="utf-8"))
@@ -181,6 +179,34 @@ def circuit_breaker(summary: dict) -> None:
         send_notification(message)
         raise RuntimeError("QC circuit breaker triggered")
     logger.info("QC circuit breaker passed")
+
+
+@task(name="auto-strategy-research")
+def auto_strategy_research_task(
+    symbols: Iterable[str] | None = None,
+    timeframes: Iterable[str] | None = None,
+    strategies: Iterable[str] | None = None,
+    min_trades: int = 100,
+    top_k: int = 3,
+) -> str:
+    logger = get_run_logger()
+    logger.info(
+        "Running auto strategy research (symbols=%s timeframes=%s strategies=%s, min_trades=%s, top_k=%s)",
+        symbols,
+        timeframes,
+        strategies,
+        min_trades,
+        top_k,
+    )
+    result = run_auto_research(
+        symbols=list(symbols) if symbols else None,
+        timeframes=list(timeframes) if timeframes else None,
+        strategies=list(strategies) if strategies else None,
+        min_trades=min_trades,
+        top_k=top_k,
+    )
+    logger.info("Auto strategy research summary stored at %s", result)
+    return str(result)
 
 
 def _date_range_for_stage(days_back: int = 1) -> tuple[str, str]:
@@ -242,3 +268,17 @@ def bitmex_daily_flow(symbols: Iterable[str] | None = None) -> None:
         for tmp in tmp_files:
             tmp.unlink(missing_ok=True)
 
+
+@flow(name="bitmex-auto-strategy")
+def bitmex_auto_strategy_flow(
+    symbols: Iterable[str] | None = None,
+    timeframes: Iterable[str] | None = None,
+    strategies: Iterable[str] | None = None,
+    min_trades: int = 100,
+    top_k: int = 3,
+) -> str:
+    """Run automated backtests across configs and emit best candidates."""
+    result_path = auto_strategy_research_task(symbols, timeframes, strategies, min_trades, top_k)
+    logger = get_run_logger()
+    logger.info("bitmex_auto_strategy_flow completed. Summary at %s", result_path)
+    return result_path

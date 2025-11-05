@@ -13,7 +13,6 @@ def make_price_frame(length: int = 100) -> pd.DataFrame:
         "High": pd.Series(range(length), index=index).astype(float) + 101,
         "Low": pd.Series(range(length), index=index).astype(float) + 99,
         "Close": pd.Series(range(length), index=index).astype(float) + 100.5,
-        "Adj Close": pd.Series(range(length), index=index).astype(float) + 100.5,
         "Volume": pd.Series(1000 + i for i in range(length)),
     }
     return pd.DataFrame(data, index=index)

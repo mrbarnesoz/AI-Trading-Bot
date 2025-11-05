@@ -1,0 +1,47 @@
+swing_trading:
+  label: "Swing Trading"
+  description: "Medium-term trades based on higher timeframe trends."
+  timeframes: ["4h", "1d"]
+  default: "4h"
+
+trend_breakout:
+  label: "Trend Breakout"
+  description: "Momentum entries on breakout confirmation."
+  timeframes: ["15m", "1h"]
+  default: "15m"
+
+mean_reversion:
+  label: "Mean Reversion"
+  description: "Short-term fade of price extremes."
+  timeframes: ["5m", "15m"]
+  default: "15m"
+
+reversion_band:
+  label: "Band Reversion"
+  description: "Volatility band snap-backs."
+  timeframes: ["15m", "1h"]
+  default: "15m"
+
+keltner_channel:
+  label: "Keltner Channel Riding"
+  description: "Trend following using Keltner channels."
+  timeframes: ["15m", "1h"]
+  default: "1h"
+
+vwap_reversion:
+  label: "VWAP Reversion"
+  description: "Intraday reversion to VWAP."
+  timeframes: ["5m", "15m"]
+  default: "5m"
+
+rsi_divergence:
+  label: "RSI Divergence"
+  description: "Momentum divergence to spot reversals."
+  timeframes: ["4h", "1d"]
+  default: "4h"
+
+momentum_burst:
+  label: "Momentum Burst"
+  description: "Ultra-short momentum scalps."
+  timeframes: ["1m", "5m"]
+  default: "1m"

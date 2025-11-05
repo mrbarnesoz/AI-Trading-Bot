@@ -1,0 +1,94 @@
+data:
+  symbol: "XBTUSD"
+  start_date: "2023-01-01T00:00:00Z"
+  end_date: null
+  interval: "15m"
+  source: "bitmex"
+  cache_dir: "data/raw/bitmex"
+features:
+  indicators: ["sma", "ema", "rsi", "macd"]
+model:
+  test_size: 0.2
+  random_state: 42
+  model_type: "random_forest"
+  n_estimators: 200
+  max_depth: 6
+  n_jobs: -1
+  model_dir: "models"
+backtest:
+  initial_capital: 10000
+  transaction_cost: 0.001
+  risk_free_rate: 0.01
+  position_capital_fraction: 0.015
+  max_total_capital_fraction: 0.045
+  max_position_units: 4
+  maker_fee_bps: 0.01
+  taker_fee_bps: 0.06
+  funding_rate_column: "fundingRate"
+  funding_accrual_hours: 8
+  signal_persistence_bars: 1
+  flip_cooldown_bars: 0
+  fallback_spread_bps: 5.0
+  backtest_min_lock: 0.2
+  entry_mode: "maker_post_only"
+  max_entry_wait_bars: 24
+  cancel_spread_bps: 2
+  reprice_on: ["new_bar", "top_of_book_change"]
+  reprice_tick_offset: 1.0
+  partial_fill_min_qty_frac: 0.25
+  allow_cross_after_timeout: false
+  min_hold_bars: 12
+  cooldown_bars_after_exit: 0
+  max_trades_per_day_side: 10
+  invert_side: false
+  enforce_gates: true
+  maker_ratio_target: 0.92
+  slippage_bps_target: 0.6
+  trades_per_day_target: 3.0
+  max_drawdown_floor: -0.12
+  min_gate_trades: 250
+  min_slippage_bps: 0.4
+filters:
+  allow_long: true
+  allow_short: true
+  min_atr_frac: 0.0010
+  trend_slope_lookback: 24
+  min_trend_slope: 0.0
+  hysteresis_k_atr: 0.8
+  min_confidence: 0.55
+  min_adx: 10
+signals:
+  post:
+    min_hold_bars: 12
+    hysteresis_k_atr: 0.8
+risk:
+  trailing:
+    enabled: false
+    update: {}
+    k_atr:
+      stop: {}
+      take: {}
+    min_lock:
+      R_multiple: 1.0
+    floor_ceiling:
+      long:
+        min_px_distance_ticks: 1
+      short:
+        min_px_distance_ticks: 1
+    slippage_guard_bps: 5
+    max_updates_per_min: 60
+pipeline:
+  lookahead: 1
+  target_column: "target_return"
+  long_threshold: 0.55
+  short_threshold: 0.45
+  long_bands: [0.55, 0.65, 0.75]
+  short_bands: [0.45, 0.35, 0.25]
+strategy:
+  name: "maker_rsi_divergence"
+  params:
+    rsi_len: 14
+    div_window: 40
+    rsi_entry: [30, 70]
+    confirm_k_atr: 0.6
+modes: []

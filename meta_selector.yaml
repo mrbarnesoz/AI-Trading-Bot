@@ -1,20 +1,22 @@
 policy: rules
 weights:
-  S1: {trend_slope: 1.0, adx: 0.6, vol_regime_high: 0.4, spread_z: -0.4}
-  S2: {vwap_dev_z: 1.0, adx: -0.6, vol_regime_low: 0.5}
+  S1: {trend_slope: 1.0, adx: 0.6, vol_regime_high: 0.4, spread_z: -0.4, signal_trend: 0.5}
+  S2: {vwap_dev_z: 1.0, adx: -0.6, vol_regime_low: 0.5, signal_mean_reversion: 0.6, prob_mean_reversion: 0.4}
   S3: {funding_z: -1.0, oi_mom: 0.6, price_mom: -0.3}
   S4: {imbalance_dOB: 1.0, spread_z: -0.7, latency_ok: 0.5}
   S5: {}
 thresholds:
-  theta_entry: {HFT: 0.55, intraday: 0.60, swing: 0.65}
-  theta_high:  {HFT: 0.70, intraday: 0.75, swing: 0.80}
+  theta_entry: {HFT: 0.50, intraday: 0.55, swing: 0.55}
+  theta_high:  {HFT: 0.68, intraday: 0.72, swing: 0.72}
 limits:
-  spread_z_max_for_S4: 1.0
+  spread_z_max_for_S4: 1.6
   S2_cap_high_trend: 0.2
-  funding_z_block_long: 1.5
-  funding_z_block_short: -2.5
-  adx_weak_trend: 15
+  funding_z_block_long: 3.0
+  funding_z_block_short: -3.5
+  adx_weak_trend: 12
+  trend_override_adx: 35
+  trend_override_epsilon: 0.04
 sizing:
   HFT:      {base_size_frac: 0.02, max_size_frac: 0.05}
-  intraday: {base_size_frac: 0.05, max_size_frac: 0.10}
-  swing:    {base_size_frac: 0.10, max_size_frac: 0.20}
+  intraday: {base_size_frac: 0.06, max_size_frac: 0.12}
+  swing:    {base_size_frac: 0.12, max_size_frac: 0.24}

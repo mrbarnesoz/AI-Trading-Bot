@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ai_trading_bot.config import load_config
-from ai_trading_bot.data.fetch import download_price_data
+from ai_trading_bot.data.fetch import get_price_data
 from ai_trading_bot.utils.logging import configure_logging
 
 
@@ -34,7 +34,15 @@ def main() -> None:
     if args.interval:
         config.data.interval = args.interval
 
-    download_price_data(config.data, force_refresh=args.force)
+    frame = get_price_data(config.data, force_download=args.force)
+    if frame.empty:
+        print("No data returned for the requested parameters.")
+    else:
+        first, last = frame.index[0], frame.index[-1]
+        print(
+            f"Cached {len(frame)} rows for {config.data.symbol} "
+            f"from {first.isoformat()} to {last.isoformat()}."
+        )
 
 
 if __name__ == "__main__":

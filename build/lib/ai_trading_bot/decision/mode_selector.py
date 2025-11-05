@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace, dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List
+from dataclasses import dataclass, replace
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -18,7 +17,7 @@ from ai_trading_bot.config import (
     StrategyModeConfig,
     _clean_probability_list,
 )
-from ai_trading_bot.data.fetch import download_price_data
+from ai_trading_bot.data.fetch import get_price_data
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +35,31 @@ class ModeDecision:
     metrics: Dict[str, float]
 
 
-def _resolve_start_date(base_start: str, lookback_days: int) -> str:
-    if lookback_days <= 0:
-        return base_start
-    try:
-        base_dt = datetime.strptime(base_start, "%Y-%m-%d").date()
-    except ValueError:
-        base_dt = datetime.utcnow().date() - timedelta(days=lookback_days)
-    lookback_dt = (datetime.utcnow() - timedelta(days=lookback_days)).date()
-    chosen = max(base_dt, lookback_dt)
-    return chosen.strftime("%Y-%m-%d")
+def _resolve_start_date(base_start: Optional[str], lookback_days: int) -> str:
+    reference = pd.Timestamp.now(tz="UTC")
+    lookback_threshold = reference - pd.Timedelta(days=lookback_days)
+
+    candidates = [lookback_threshold]
+    if base_start:
+        try:
+            base_ts = pd.to_datetime(base_start, utc=True)
+        except (TypeError, ValueError):
+            base_ts = None
+        if base_ts is not None:
+            candidates.append(base_ts)
+
+    chosen = max(candidates)
+    return chosen.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _score_mode(price_data: pd.DataFrame, mode: StrategyModeConfig) -> Dict[str, float]:
     if price_data.empty:
         return {"score": float("-inf"), "volatility": 0.0, "trend_strength": 0.0, "liquidity": 0.0}
 
-    returns = price_data["Adj Close"].pct_change().dropna()
+    if "Close" not in price_data.columns:
+        return {"score": float("-inf"), "volatility": 0.0, "trend_strength": 0.0, "liquidity": 0.0}
+
+    returns = price_data["Close"].pct_change().dropna()
     if returns.empty:
         return {"score": float("-inf"), "volatility": 0.0, "trend_strength": 0.0, "liquidity": 0.0}
 
@@ -107,9 +114,12 @@ def select_mode(config: AppConfig, force_download: bool = False) -> ModeDecision
         data_cfg = replace(config.data)
         data_cfg.interval = mode.interval
         data_cfg.start_date = _resolve_start_date(config.data.start_date, mode.lookback_days)
+        data_cfg.end_date = config.data.end_date
+        if not data_cfg.source:
+            data_cfg.source = "bitmex"
 
         try:
-            price_data = download_price_data(data_cfg, force_refresh=force_download)
+            price_data = get_price_data(data_cfg, force_download=force_download)
         except Exception as exc:  # pragma: no cover - network errors handled gracefully
             logger.warning("Failed to download data for mode %s: %s", mode.name, exc)
             continue

@@ -1,0 +1,6 @@
+*** Begin Patch
+*** Update File: src/ai_trading_bot/models/predictor.py
+@@
+-from typing import Iterable, Tuple
++from typing import Any, Iterable, Tuple
+*** End Patch

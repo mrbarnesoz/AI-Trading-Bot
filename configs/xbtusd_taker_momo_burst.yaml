@@ -1,0 +1,96 @@
+data:
+  symbol: "XBTUSD"
+  start_date: "2023-01-01T00:00:00Z"
+  end_date: null
+  interval: "1m"
+  source: "bitmex"
+  cache_dir: "data/raw/bitmex"
+features:
+  indicators: ["sma", "ema", "rsi", "macd"]
+model:
+  test_size: 0.2
+  random_state: 42
+  model_type: "random_forest"
+  n_estimators: 200
+  max_depth: 6
+  n_jobs: -1
+  model_dir: "models"
+backtest:
+  initial_capital: 10000
+  transaction_cost: 0.001
+  risk_free_rate: 0.01
+  position_capital_fraction: 0.003
+  max_total_capital_fraction: 0.009
+  max_position_units: 4
+  maker_fee_bps: -0.002
+  taker_fee_bps: 0.075
+  funding_rate_column: "fundingRate"
+  funding_accrual_hours: 8
+  signal_persistence_bars: 1
+  flip_cooldown_bars: 0
+  fallback_spread_bps: 5.0
+  backtest_min_lock: 0.0
+  entry_mode: "taker"
+  max_entry_wait_bars: 1
+  cancel_spread_bps: 3
+  reprice_on: ["new_bar"]
+  reprice_tick_offset: 0.0
+  partial_fill_min_qty_frac: 1.0
+  allow_cross_after_timeout: true
+  min_hold_bars: 2
+  cooldown_bars_after_exit: 0
+  max_trades_per_day_side: 50
+  invert_side: false
+  enforce_gates: true
+  maker_ratio_target: 0.0
+  slippage_bps_target: 3.0
+  trades_per_day_target: 40.0
+  max_drawdown_floor: -0.06
+  min_gate_trades: 500
+  min_slippage_bps: 0.5
+filters:
+  allow_long: true
+  allow_short: true
+  min_atr_frac: 0.0
+  trend_slope_lookback: 6
+  min_trend_slope: 0.0
+  hysteresis_k_atr: 0.2
+  min_confidence: 0.50
+  min_adx: 5
+signals:
+  post:
+    min_hold_bars: 2
+    hysteresis_k_atr: 0.2
+risk:
+  trailing:
+    enabled: false
+    update: {}
+    k_atr:
+      stop: {}
+      take: {}
+    min_lock:
+      R_multiple: 0.0
+    floor_ceiling:
+      long:
+        min_px_distance_ticks: 1
+      short:
+        min_px_distance_ticks: 1
+    slippage_guard_bps: 10
+    max_updates_per_min: 240
+pipeline:
+  lookahead: 1
+  target_column: "target_return"
+  long_threshold: 0.55
+  short_threshold: 0.45
+  long_bands: [0.55, 0.65, 0.75]
+  short_bands: [0.45, 0.35, 0.25]
+strategy:
+  name: "taker_momo_burst"
+  params:
+    momo_len: 14
+    momo_threshold: 2.0
+    cooldown_bars: 6
+    tp_k_atr: 0.8
+    sl_k_atr: 0.9
+    execution_max_slippage_bps: 3.0
+modes: []
