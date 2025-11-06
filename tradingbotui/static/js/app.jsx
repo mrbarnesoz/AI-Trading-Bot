@@ -2039,6 +2039,127 @@ function TradesPanel({ data, strategyMetadata = {}, onClear, clearing = false })
     </div>
   );
 }
+
+function DecisionTelemetry({ data }) {
+  const metrics = (data && data.metrics) || {};
+  const events = Array.isArray(data && data.events) ? data.events : [];
+
+  const stageEntries = Object.entries(metrics.by_stage || {}).map(([stage, count]) => ({
+    stage,
+    count,
+  }));
+
+  const strategyEntries = Object.entries(metrics.by_strategy || {}).map(([strategy, info]) => ({
+    strategy,
+    total: info.total || 0,
+    byStage: info.by_stage || {},
+  }));
+
+  const formatStage = (stage) =>
+    String(stage || "unknown")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (match) => match.toUpperCase());
+
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-200">
+          Decision telemetry
+        </h3>
+        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-200">
+          {metrics.total_events || 0} events
+        </span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            By stage
+          </div>
+          {stageEntries.length ? (
+            stageEntries.map(({ stage, count }) => (
+              <div
+                key={stage}
+                className="flex items-center justify-between rounded border border-slate-800 px-3 py-1 text-xs text-slate-200"
+              >
+                <span>{formatStage(stage)}</span>
+                <span className="font-mono text-slate-100">{count}</span>
+              </div>
+            ))
+          ) : (
+            <div className="rounded border border-slate-800 px-3 py-2 text-xs text-slate-500">
+              No decision events recorded yet.
+            </div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            By strategy
+          </div>
+          {strategyEntries.length ? (
+            strategyEntries.map(({ strategy, total, byStage }) => (
+              <div
+                key={strategy}
+                className="rounded border border-slate-800 px-3 py-2 text-xs text-slate-200 space-y-1"
+              >
+                <div className="flex items-center justify-between font-semibold">
+                  <span>{strategy}</span>
+                  <span className="font-mono text-slate-100">{total}</span>
+                </div>
+                {Object.keys(byStage).length > 0 && (
+                  <div className="grid grid-cols-2 gap-1 text-[11px] text-slate-400">
+                    {Object.entries(byStage).map(([stage, count]) => (
+                      <div key={`${strategy}-${stage}`} className="flex items-center justify-between">
+                        <span>{formatStage(stage)}</span>
+                        <span className="font-mono text-slate-200">{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          ) : (
+            <div className="rounded border border-slate-800 px-3 py-2 text-xs text-slate-500">
+              No strategy-level decisions observed.
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Recent events
+        </div>
+        <div className="max-h-56 overflow-y-auto divide-y divide-slate-800 rounded border border-slate-800 text-xs text-slate-200">
+          {events.length ? (
+            events.slice(0, 20).map((event, idx) => (
+              <div key={`${event.timestamp}-${idx}`} className="px-3 py-2 space-y-0.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] text-slate-400">
+                    {event.timestamp ? dayjs(event.timestamp).format("YYYY-MM-DD HH:mm:ss") : "—"}
+                  </span>
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-200">
+                    {formatStage(event.stage)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Strategy: {event.strategy || "—"}</span>
+                  <span className="text-slate-400">Symbol: {event.symbol || "—"}</span>
+                </div>
+                {event.details && Object.keys(event.details).length > 0 && (
+                  <div className="text-[11px] text-slate-400">
+                    Details: {JSON.stringify(event.details)}
+                  </div>
+                )}
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-4 text-slate-500">No events recorded yet.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LearningPanel({ state, onToggle }) {
   const online = !!(state && state.online_learning);
   const periodic = !!(state && state.periodic_retraining);
@@ -2243,6 +2364,10 @@ function App() {
   });
   const configsPoll = usePolling("/api/configs", POLL_INTERVAL_SLOW, { configs: [] });
   const tradesPoll = usePolling("/api/trades?limit=400", POLL_INTERVAL_SLOW, { records: [], stats: {} });
+  const tradeMetricsPoll = usePolling("/api/trades/metrics", POLL_INTERVAL_SLOW, {
+    metrics: { total_events: 0, by_stage: {}, by_strategy: {} },
+    events: [],
+  });
 
   const strategyRows = useMemo(
     () =>
@@ -2425,6 +2550,7 @@ const handleClearTrades = async () => {
     await apiRequest("/api/trades/clear", { method: "POST" });
     pushMessage("Trade log cleared.", "success");
     tradesPoll.refresh();
+    tradeMetricsPoll.refresh();
   } catch (err) {
     pushMessage(`Clear failed: ${err.message}`, "critical");
   } finally {
@@ -2730,6 +2856,7 @@ return (
             onClear={handleClearTrades}
             clearing={clearingTrades}
           />
+          <DecisionTelemetry data={tradeMetricsPoll.data || {}} />
         </div>
         <div className="space-y-4">
           <KafkaControls status={kafkaStatus} onAction={handleKafkaAction} working={kafkaWorking} />

@@ -32,10 +32,12 @@ def app(monkeypatch, tmp_path):
     trade_log_path = logs_dir / "trades.jsonl"
     open_positions_path = logs_dir / "open_positions.json"
     latest_trades_path = results_dir / "latest_trades.json"
+    decision_log_path = logs_dir / "decision_events.jsonl"
     monkeypatch.setattr(routes, "_TRADE_LOG_PATH", trade_log_path, raising=False)
     monkeypatch.setattr(tasks, "TRADE_LOG_PATH", trade_log_path, raising=False)
     monkeypatch.setattr(tasks, "OPEN_POSITIONS_PATH", open_positions_path, raising=False)
     monkeypatch.setattr(tasks, "LATEST_TRADES_PATH", latest_trades_path, raising=False)
+    monkeypatch.setattr(tasks, "DECISION_LOG_PATH", decision_log_path, raising=False)
     application = create_app()
     application.config["TESTING"] = True
     return application
@@ -363,3 +365,25 @@ def test_api_trades_clear_endpoint(app):
     assert trade_log_path.exists() is False
     assert latest_trades_path.exists() is False
     assert payload["records"] == []
+
+
+def test_api_trades_metrics_defaults(app):
+    client = app.test_client()
+    response = client.get("/api/trades/metrics")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["metrics"]["total_events"] == 0
+    assert payload["events"] == []
+
+
+def test_api_trades_metrics_record(app):
+    client = app.test_client()
+    response = client.post(
+        "/api/trades/metrics",
+        json={"stage": "Considered", "strategy": "mean_reversion", "symbol": "XBTUSD"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["metrics"]["total_events"] == 1
+    assert payload["metrics"]["by_stage"]["considered"] == 1
+    assert payload["metrics"]["by_strategy"]["mean_reversion"]["total"] == 1

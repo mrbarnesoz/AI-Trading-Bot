@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 BASE_DIR = Path.cwd()
 LOG_DIR = BASE_DIR / "logs"
@@ -17,6 +18,7 @@ JOB_REGISTRY_PATH = LOG_DIR / "job_registry.json"
 TRADE_LOG_PATH = LOG_DIR / "trades.jsonl"
 OPEN_POSITIONS_PATH = LOG_DIR / "open_positions.json"
 KAFKA_STATE_PATH = LOG_DIR / "kafka_state.json"
+DECISION_LOG_PATH = LOG_DIR / "decision_events.jsonl"
 LATEST_TRADES_PATH = RESULTS_DIR / "latest_trades.json"
 
 
@@ -204,6 +206,112 @@ def _save_trade_history(
 
 
 # ---------------------------------------------------------------------------
+# Decision metrics helpers
+# ---------------------------------------------------------------------------
+
+def _parse_timestamp(value: Optional[str]) -> Tuple[Optional[datetime], Optional[str]]:
+    if not value:
+        return None, None
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed, parsed.isoformat()
+    except ValueError:
+        return None, text
+
+
+def _load_decision_events(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    if not DECISION_LOG_PATH.exists():
+        return []
+    events: List[Dict[str, Any]] = []
+    try:
+        with DECISION_LOG_PATH.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+
+    def sort_key(item: Dict[str, Any]) -> Tuple[int, float]:
+        parsed, _ = _parse_timestamp(item.get("timestamp"))
+        if parsed:
+            return (0, parsed.timestamp())
+        return (1, 0.0)
+
+    events.sort(key=sort_key, reverse=True)
+    if limit is not None:
+        return events[:limit]
+    return events
+
+
+def record_trade_decision(event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(event or {})
+    stage_raw = str(payload.get("stage") or "unknown").strip()
+    if not stage_raw:
+        raise ValueError("stage is required")
+    stage = stage_raw.lower()
+
+    strategy = str(payload.get("strategy") or "").strip() or "unknown"
+    symbol = str(payload.get("symbol") or "").strip() or "?"
+    timestamp = payload.get("timestamp")
+    _, iso_ts = _parse_timestamp(timestamp)
+    if not iso_ts:
+        iso_ts = _timestamp()
+
+    record = {
+        "timestamp": iso_ts,
+        "stage": stage,
+        "stage_label": stage_raw,
+        "strategy": strategy,
+        "symbol": symbol,
+        "details": payload.get("details") or {},
+    }
+    DECISION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with DECISION_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record))
+        handle.write("\n")
+    return record
+
+
+def get_trade_metrics(limit: int = 50) -> Dict[str, Any]:
+    events = _load_decision_events()
+    stage_counts: Dict[str, int] = defaultdict(int)
+    strategy_counts: Dict[str, Dict[str, Any]] = {}
+
+    for entry in events:
+        stage = str(entry.get("stage") or "unknown").lower()
+        strategy = str(entry.get("strategy") or "unknown")
+        stage_counts[stage] += 1
+        strat_bucket = strategy_counts.setdefault(
+            strategy, {"total": 0, "by_stage": defaultdict(int)}
+        )
+        strat_bucket["total"] += 1
+        strat_bucket["by_stage"][stage] += 1
+
+    metrics = {
+        "total_events": len(events),
+        "by_stage": dict(stage_counts),
+        "by_strategy": {
+            strategy: {
+                "total": info["total"],
+                "by_stage": dict(info["by_stage"]),
+            }
+            for strategy, info in strategy_counts.items()
+        },
+    }
+
+    return {
+        "metrics": metrics,
+        "events": _load_decision_events(limit=limit),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API used by routes.py
 # ---------------------------------------------------------------------------
 
@@ -349,5 +457,7 @@ __all__ = [
     "start_kafka_stack",
     "stop_kafka_stack",
     "infer_trade_status",
+    "record_trade_decision",
+    "get_trade_metrics",
     "clear_trade_history",
 ]

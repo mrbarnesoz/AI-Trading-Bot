@@ -1980,6 +1980,26 @@ def api_trades_clear():
     return jsonify({'status': 'ok', 'result': result, 'records': trade_records, 'stats': stats})
 
 
+@api_bp.route('/trades/metrics', methods=['GET'])
+def api_trades_metrics():
+    limit = request.args.get('limit', type=int) or 50
+    payload = tasks.get_trade_metrics(limit=limit)
+    return jsonify(payload)
+
+
+@api_bp.route('/trades/metrics', methods=['POST'])
+def api_trades_metrics_record():
+    payload = request.get_json(force=True) or {}
+    try:
+        event = tasks.record_trade_decision(payload)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    limit = request.args.get('limit', type=int) or 50
+    metrics = tasks.get_trade_metrics(limit=limit)
+    metrics['last_event'] = event
+    return jsonify(metrics)
+
+
 @api_bp.route('/learning/toggle', methods=['POST'])
 def api_toggle_learning():
     payload = request.get_json(force=True) or {}
