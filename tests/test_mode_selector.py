@@ -4,7 +4,11 @@ import pandas as pd
 import pytest
 
 from ai_trading_bot.config import AppConfig, StrategyModeConfig
-from ai_trading_bot.decision.mode_selector import ModeDecision, select_mode
+from ai_trading_bot.decision.mode_selector import (
+    ModeDecision,
+    _resolve_start_date,
+    select_mode,
+)
 
 
 def _make_price_frame(start: str, periods: int, freq: str, trend: float, noise: float) -> pd.DataFrame:
@@ -63,3 +67,21 @@ def test_select_mode_prefers_trending_environment(monkeypatch: pytest.MonkeyPatc
     assert decision.mode.name == "swing"
     assert decision.pipeline_config.long_threshold == 0.55
     assert decision.backtest_config.position_capital_fraction == config.backtest.position_capital_fraction
+
+
+def test_resolve_start_date_respects_end_date() -> None:
+    base_start = "2024-06-11T00:00:00Z"
+    end_date = "2024-06-11T00:00:00Z"
+    resolved = _resolve_start_date(base_start, lookback_days=60, end_date=end_date)
+    resolved_ts = pd.to_datetime(resolved, utc=True)
+    expected = pd.to_datetime("2024-04-12T00:00:00Z", utc=True)
+    assert resolved_ts == expected
+
+
+def test_resolve_start_date_uses_base_when_earlier() -> None:
+    base_start = "2024-01-01T00:00:00Z"
+    end_date = "2024-06-01T00:00:00Z"
+    resolved = _resolve_start_date(base_start, lookback_days=30, end_date=end_date)
+    resolved_ts = pd.to_datetime(resolved, utc=True)
+    base_ts = pd.to_datetime(base_start, utc=True)
+    assert resolved_ts == base_ts

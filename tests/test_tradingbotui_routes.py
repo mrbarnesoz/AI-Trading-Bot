@@ -26,6 +26,7 @@ def app(monkeypatch, tmp_path):
     monkeypatch.setattr(routes, "_BACKTEST_ARCHIVE_DIR", results_dir / "archive", raising=False)
     monkeypatch.setattr(tasks, "LOG_DIR", logs_dir, raising=False)
     monkeypatch.setattr(tasks, "RESULTS_DIR", core_results_dir, raising=False)
+    monkeypatch.setattr(tasks, "RESULTS_UI_DIR", results_dir, raising=False)
     monkeypatch.setattr(tasks, "STATE_PATH", logs_dir / "trading_state.json", raising=False)
     monkeypatch.setattr(tasks, "JOB_REGISTRY_PATH", logs_dir / "job_registry.json", raising=False)
     monkeypatch.setattr(tasks, "KAFKA_STATE_PATH", logs_dir / "kafka_state.json", raising=False)
@@ -33,11 +34,18 @@ def app(monkeypatch, tmp_path):
     open_positions_path = logs_dir / "open_positions.json"
     latest_trades_path = results_dir / "latest_trades.json"
     decision_log_path = logs_dir / "decision_events.jsonl"
+    guardrail_log_path = logs_dir / "guardrail_events.jsonl"
+    guardrail_snapshot_dir = results_dir / "guardrail_snapshots"
     monkeypatch.setattr(routes, "_TRADE_LOG_PATH", trade_log_path, raising=False)
+    monkeypatch.setattr(routes, "_GUARDRAIL_LOG_PATH", guardrail_log_path, raising=False)
+    monkeypatch.setattr(routes, "_GUARDRAIL_SNAPSHOT_DIR", guardrail_snapshot_dir, raising=False)
     monkeypatch.setattr(tasks, "TRADE_LOG_PATH", trade_log_path, raising=False)
     monkeypatch.setattr(tasks, "OPEN_POSITIONS_PATH", open_positions_path, raising=False)
     monkeypatch.setattr(tasks, "LATEST_TRADES_PATH", latest_trades_path, raising=False)
     monkeypatch.setattr(tasks, "DECISION_LOG_PATH", decision_log_path, raising=False)
+    monkeypatch.setattr(tasks, "GUARDRAIL_LOG_PATH", guardrail_log_path, raising=False)
+    monkeypatch.setattr(tasks, "GUARDRAIL_SNAPSHOT_DIR", guardrail_snapshot_dir, raising=False)
+    monkeypatch.setattr(tasks, "spawn_plan_runner", lambda *args, **kwargs: None)
     application = create_app()
     application.config["TESTING"] = True
     return application
@@ -87,13 +95,20 @@ def test_api_backtests_uses_manifest_default_timeframe(app, monkeypatch):
 
     recorded_calls = []
 
-    def fake_start_backtest(strategy: str, symbol: str, timeframe: str, capital_pct: str):
-        recorded_calls.append((strategy, symbol, timeframe, capital_pct))
+    parent_calls = []
+
+    def fake_create_plan_job(plan, capital_pct, start_date=None, end_date=None):
+        parent_calls.append((plan, capital_pct, start_date, end_date))
+        return "bundle-001", []
+
+    def fake_start_backtest(strategy: str, symbol: str, timeframe: str, capital_pct: str, **kwargs):
+        recorded_calls.append((strategy, symbol, timeframe, capital_pct, kwargs))
         return "job-001"
 
     def fake_start_backtest_batch(*_args, **_kwargs):
         raise AssertionError("batch backtest should not be invoked for single symbol payloads")
 
+    monkeypatch.setattr(tasks, "create_backtest_plan_job", fake_create_plan_job)
     monkeypatch.setattr(tasks, "start_backtest", fake_start_backtest)
     monkeypatch.setattr(tasks, "start_backtest_batch", fake_start_backtest_batch)
 
@@ -108,11 +123,14 @@ def test_api_backtests_uses_manifest_default_timeframe(app, monkeypatch):
     )
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["job_ids"] == ["job-001"]
+    assert payload["job_ids"] == ["bundle-001"]
     assert payload["launch_plan"][0]["timeframe"] == "1h"
     assert payload["launch_plan"][0]["strategy"] == "trend_breakout"
     assert payload["launch_plan"][0]["symbols"] == []
-    assert recorded_calls == [("trend_breakout", "", "1h", "5")]
+    assert parent_calls and parent_calls[0][0][0]["timeframe"] == "1h"
+    assert recorded_calls == [
+        ("trend_breakout", "", "1h", "5", {"parent_id": "bundle-001", "hidden": True})
+    ]
 
 
 def test_api_backtests_normalises_job_timestamps(app, monkeypatch):
@@ -387,3 +405,192 @@ def test_api_trades_metrics_record(app):
     assert payload["metrics"]["total_events"] == 1
     assert payload["metrics"]["by_stage"]["considered"] == 1
     assert payload["metrics"]["by_strategy"]["mean_reversion"]["total"] == 1
+
+
+def test_api_clear_job_queue_endpoint(app):
+    registry_path = tasks.JOB_REGISTRY_PATH
+    registry_path.write_text(
+        json.dumps({"job-1": {"id": "job-1", "status": "queued"}}),
+        encoding="utf-8",
+    )
+    client = app.test_client()
+    response = client.post("/api/backtests/jobs/clear")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["jobs"] == []
+    assert payload["result"]["removed"] == 1
+    assert not registry_path.exists()
+
+
+def test_api_guardrails_clear_endpoint(app):
+    guardrail_log_path = tasks.GUARDRAIL_LOG_PATH
+    guardrail_snapshot_dir = tasks.GUARDRAIL_SNAPSHOT_DIR
+    guardrail_log_path.write_text(json.dumps({"rule": "drawdown", "timestamp": "2025-11-05"}) + "\n", encoding="utf-8")
+    guardrail_snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snap_file = guardrail_snapshot_dir / "snapshot.json"
+    snap_file.write_text(json.dumps({"state": "example"}), encoding="utf-8")
+
+    client = app.test_client()
+    response = client.post("/api/guardrails/clear")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["guardrail_logs"] == []
+    assert payload["guardrail_snapshots"] == []
+    assert not guardrail_log_path.exists()
+    assert not guardrail_snapshot_dir.exists()
+
+
+def test_list_recent_results_deduplicates_by_identity(app):
+    result_dir = routes._BACKTEST_RESULTS_DIR
+    base_payload = {
+        "config": "configs/shared.yaml",
+        "summary": {"calc_sharpe": 0.3, "trades_count": 50},
+        "metadata": {"symbol": "XBTUSD", "interval": "1h", "strategy": "trend"},
+    }
+    first = dict(base_payload)
+    first["identity"] = {
+        "strategy": "trend",
+        "symbol": "XBTUSD",
+        "timeframe": "1h",
+        "plan_job_id": "plan-1",
+        "child_job_id": "child-a",
+    }
+    first["strategy_label"] = "Trend Strategy"
+    first["explanations"] = {"entry": "Trend validation"}
+    (result_dir / "trend-xbt.json").write_text(json.dumps(first), encoding="utf-8")
+    duplicate = dict(base_payload)
+    duplicate["summary"] = {"calc_sharpe": 0.1, "trades_count": 25}
+    duplicate["identity"] = {
+        "strategy": "trend",
+        "symbol": "XBTUSD",
+        "timeframe": "1h",
+        "plan_job_id": "plan-1",
+        "child_job_id": "child-b",
+    }
+    duplicate["explanations"] = {"entry": "Trend validation"}
+    duplicate["strategy_label"] = "Trend Strategy"
+    (result_dir / "trend-xbt-dup.json").write_text(json.dumps(duplicate), encoding="utf-8")
+    eth_payload = {
+        "config": "configs/shared.yaml",
+        "summary": {"calc_sharpe": 0.5, "trades_count": 75},
+        "metadata": {"symbol": "ETHUSD", "interval": "1h", "strategy": "trend"},
+        "identity": {
+            "strategy": "trend",
+            "symbol": "ETHUSD",
+            "timeframe": "1h",
+            "plan_job_id": "plan-1",
+            "child_job_id": "child-c",
+        },
+    }
+    (result_dir / "trend-eth.json").write_text(json.dumps(eth_payload), encoding="utf-8")
+    results = routes._list_recent_results(10)
+    assert len(results) == 2
+    symbols = {row["identity"]["symbol"] for row in results}
+    assert symbols == {"XBTUSD", "ETHUSD"}
+    trend_row = next(row for row in results if row["identity"]["symbol"] == "XBTUSD")
+    assert trend_row["explanations"].get("entry") == "Trend validation"
+    assert trend_row["strategy_label"] == "Trend Strategy"
+
+
+def test_match_backtest_results_uses_plan_identity(app):
+    result_dir = routes._BACKTEST_RESULTS_DIR
+    payload = {
+        "config": "configs/shared.yaml",
+        "summary": {"calc_sharpe": 0.9},
+        "metadata": {"symbol": "ADAUSD", "interval": "15m", "strategy": "reversion_band"},
+        "identity": {
+            "strategy": "reversion_band",
+            "symbol": "ADAUSD",
+            "timeframe": "15m",
+            "plan_job_id": "plan-1",
+            "child_job_id": "child-1",
+        },
+    }
+    result_path = result_dir / "band-ada-15m.json"
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+    plan_job = {
+        "id": "plan-1",
+        "type": "backtest_plan",
+        "child_jobs": ["child-1"],
+    }
+    child_job = {
+        "id": "child-1",
+        "parent_id": "plan-1",
+    }
+    plan_matches = routes._match_backtest_results(plan_job)
+    assert result_path in plan_matches
+    child_matches = routes._match_backtest_results(child_job)
+    assert result_path in child_matches
+
+
+def test_strategy_rows_prefers_identity_over_config(app, monkeypatch):
+    metrics = [
+        {"strategy": "trend", "symbol": "XBTUSD", "timeframe": "1h", "sharpe": 0.9, "trades_count": 400, "win_rate": 0.55, "max_drawdown": 0.1},
+        {"strategy": "trend", "symbol": "ETHUSD", "timeframe": "1h", "sharpe": 0.7, "trades_count": 380, "win_rate": 0.5, "max_drawdown": 0.12},
+    ]
+    identity_xbt = routes._strategy_key("XBTUSD", "1h", "trend")
+    identity_eth = routes._strategy_key("ETHUSD", "1h", "trend")
+    recent_results = [
+        {
+            "config": "configs/shared.yaml",
+            "identity_key": identity_xbt,
+            "identity": {"strategy": "trend", "symbol": "XBTUSD", "timeframe": "1h"},
+        },
+        {
+            "config": "configs/shared.yaml",
+            "identity_key": identity_eth,
+            "identity": {"strategy": "trend", "symbol": "ETHUSD", "timeframe": "1h"},
+        },
+    ]
+    monkeypatch.setattr(routes, "_load_auto_research", lambda: [])
+    monkeypatch.setattr(routes, "_strategy_orchestration_metrics", lambda data: metrics)
+    monkeypatch.setattr(routes, "_list_recent_results", lambda limit=50: recent_results)
+    monkeypatch.setattr(routes, "_read_trade_records", lambda limit=None: [])
+    monkeypatch.setattr(routes, "_list_jobs", lambda: [])
+    monkeypatch.setattr(routes, "_resolve_config_path", lambda *args, **kwargs: "configs/shared.yaml")
+    monkeypatch.setattr(routes, "_load_config_dict", lambda *_: {})
+    monkeypatch.setattr(routes, "_parameter_warnings", lambda *args, **kwargs: [])
+    monkeypatch.setattr(routes, "_rolling_statistics", lambda *args, **kwargs: {})
+    monkeypatch.setattr(routes, "get_strategy_manifest", lambda: {"trend": {"timeframes": ["1h"], "default": "1h", "label": "Trend"}})
+    rows = routes._strategy_rows()
+    assert len(rows) == 2
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["XBTUSD"]["latest_result"]["identity"]["symbol"] == "XBTUSD"
+    assert by_symbol["ETHUSD"]["latest_result"]["identity"]["symbol"] == "ETHUSD"
+
+
+def test_run_backtest_subprocess_handles_multiline_json(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}", encoding="utf-8")
+
+    class FakeCompleted:
+        def __init__(self):
+            self.stdout = "log before\n{\n  \"foo\": 1,\n  \"bar\": 2\n}\nextra log\n"
+            self.stderr = ""
+
+    def fake_run(*args, **kwargs):
+        return FakeCompleted()
+
+    monkeypatch.setattr(tasks.subprocess, "run", fake_run)
+    payload = tasks._run_backtest_subprocess(config_path)
+    assert payload == {"foo": 1, "bar": 2}
+
+
+def test_api_clear_backtest_results_moves_files(app):
+    result_dir = routes._BACKTEST_RESULTS_DIR
+    archive_dir = routes._BACKTEST_ARCHIVE_DIR
+    file_a = result_dir / "result-a.json"
+    file_b = result_dir / "result-b.json"
+    file_a.write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    file_b.write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    client = app.test_client()
+    response = client.delete("/api/backtests/results")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["removed"] == 2
+    assert not file_a.exists()
+    assert not file_b.exists()
+    archived = list(archive_dir.glob("result-a*.json"))
+    assert archived, "expected files to be archived"
+    response = client.delete("/api/backtests/results?archive=0")
+    assert response.status_code == 200

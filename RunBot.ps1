@@ -137,6 +137,123 @@ function Ensure-Command {
     }
 }
 
+function Invoke-FrontendBundle {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$BundlePath
+    )
+
+    if (-not (Test-Path $SourcePath)) {
+        Write-Log "Frontend source not found at $SourcePath; skipping bundle build." "WARN"
+        return
+    }
+
+    $mode = ($env:RUNBOT_BUILD_BUNDLE ?? "force").ToString().ToLowerInvariant()
+    if ($mode -in @("0", "false", "skip", "off")) {
+        Write-Log "RUNBOT_BUILD_BUNDLE=$mode -> skipping React bundle build." "DEBUG"
+        return
+    }
+
+    $shouldBuild = $true
+    if ($mode -in @("", "auto", "changed")) {
+        $shouldBuild = $false
+        if (-not (Test-Path $BundlePath)) {
+            $shouldBuild = $true
+        } elseif ((Get-Item $BundlePath).LastWriteTimeUtc -lt (Get-Item $SourcePath).LastWriteTimeUtc) {
+            $shouldBuild = $true
+        }
+    }
+
+    if (-not $shouldBuild) {
+        Write-Log "Frontend bundle up-to-date; skipping build." "DEBUG"
+        return
+    }
+
+    $npx = Get-Command "npx" -ErrorAction SilentlyContinue
+    if (-not $npx) {
+        Write-Log "npx not found on PATH; cannot refresh React bundle." "WARN"
+        return
+    }
+
+    $bundleDir = Split-Path -Parent $BundlePath
+    if (-not (Test-Path $bundleDir)) {
+        New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+    }
+
+    $args = @(
+        "esbuild",
+        $SourcePath,
+        "--loader:.jsx=jsx",
+        "--outfile=$BundlePath",
+        "--format=iife",
+        "--minify"
+    )
+
+    Write-Log "Building React bundle via esbuild..." "INFO"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $npx.Source
+    $psi.WorkingDirectory = $PSScriptRoot
+    foreach ($arg in $args) {
+        [void]$psi.ArgumentList.Add($arg)
+    }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    if ($stdout) { Write-Log $stdout.Trim() "DEBUG" }
+    if ($stderr) { Write-Log $stderr.Trim() ($(if ($process.ExitCode -eq 0) { "DEBUG" } else { "ERROR" })) }
+
+    if ($process.ExitCode -ne 0) {
+        throw "esbuild exited with code $($process.ExitCode); see logs above for details."
+    }
+
+    Write-Log "React bundle updated at $BundlePath" "SUCCESS"
+}
+
+function Ensure-UiVendorAssets {
+    $vendorDir = Join-Path $PSScriptRoot "tradingbotui\static\vendor"
+    New-Item -ItemType Directory -Path $vendorDir -Force | Out-Null
+
+    $mode = ($env:RUNBOT_REFRESH_VENDOR ?? "auto").ToString().ToLowerInvariant()
+    $force = $mode -in @("force", "1", "true", "yes", "refresh")
+
+    $assets = @(
+        @{ Name = "react.production.min.js"; Url = "https://unpkg.com/react@18/umd/react.production.min.js" },
+        @{ Name = "react-dom.production.min.js"; Url = "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" },
+        @{ Name = "dayjs.min.js"; Url = "https://unpkg.com/dayjs@1/dayjs.min.js" },
+        @{ Name = "dayjs-plugin-relativeTime.js"; Url = "https://unpkg.com/dayjs@1/plugin/relativeTime.js" },
+        @{ Name = "chart.umd.min.js"; Url = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" }
+    )
+
+    foreach ($asset in $assets) {
+        $targetPath = Join-Path $vendorDir $asset.Name
+        $shouldDownload = $force -or -not (Test-Path $targetPath)
+        if (-not $shouldDownload) {
+            continue
+        }
+        Write-Log ("Fetching UI asset {0}..." -f $asset.Name) "INFO"
+        $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        try {
+            Invoke-WebRequest -Uri $asset.Url -OutFile $tempFile -UseBasicParsing -TimeoutSec 120 | Out-Null
+            Move-Item -Path $tempFile -Destination $targetPath -Force
+            Write-Log ("Updated {0}" -f $asset.Name) "DEBUG"
+        } catch {
+            if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
+            $message = "Failed to download {0}: {1}" -f $asset.Name, $_.Exception.Message
+            if (-not (Test-Path $targetPath)) {
+                throw $message
+            } else {
+                Write-Log "$message (using existing copy)" "WARN"
+            }
+        }
+    }
+}
+
 function Ensure-Process {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -265,6 +382,28 @@ function Ensure-KafkaNetwork {
     }
 }
 
+function Remove-StaleKafkaContainers {
+    if (-not $ManageKafkaStack) { return }
+    if (-not (Test-Path $KafkaComposeFile)) { return }
+    $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
+    if (-not $dockerCmd) { return }
+    $args = @("compose", "-p", $KafkaProjectName, "-f", $KafkaComposeFile, "down", "--remove-orphans")
+    try {
+        $result = Invoke-ProcessWithInput -FilePath "docker" -ArgumentList $args -Description "docker compose down (pre-clean Kafka stack)"
+    } catch {
+        Write-Log "Pre-clean Kafka stack removal failed: $($_.Exception.Message)" "WARN"
+        return
+    }
+    if ($result.ExitCode -eq 0) {
+        Write-Log "Cleared previous Kafka/ZooKeeper containers (project '$KafkaProjectName')." "INFO"
+    } else {
+        $msg = $result.Stderr.Trim()
+        if (-not $msg) { $msg = $result.Stdout.Trim() }
+        if (-not $msg) { $msg = "exit $($result.ExitCode)" }
+        Write-Log "Pre-clean Kafka stack removal returned exit $($result.ExitCode): $msg" "WARN"
+    }
+}
+
 function Start-KafkaStack {
     if (-not $ManageKafkaStack) { return }
     if (-not (Test-Path $KafkaComposeFile)) {
@@ -278,6 +417,7 @@ function Start-KafkaStack {
         $script:ManageKafkaStack = $false
         return
     }
+    Remove-StaleKafkaContainers
     Ensure-KafkaNetwork
     $args = @("compose", "-p", $KafkaProjectName, "-f", $KafkaComposeFile, "up", "-d", "--remove-orphans")
     try {
@@ -769,6 +909,18 @@ function Start-Gui {
             if (Test-Port -TargetHost "127.0.0.1" -Port 5000) {
                 Write-Log "Port 5000 already in use; Flask UI may fail to bind." "WARN"
             }
+            try {
+                Ensure-UiVendorAssets
+            } catch {
+                throw "Unable to prepare UI vendor assets: $($_.Exception.Message)"
+            }
+            try {
+                $sourcePath = Join-Path $PSScriptRoot "tradingbotui\static\js\app.jsx"
+                $bundlePath = Join-Path $PSScriptRoot "tradingbotui\static\js\app.bundle.js"
+                Invoke-FrontendBundle -SourcePath $sourcePath -BundlePath $bundlePath
+            } catch {
+                Write-Log ("Frontend bundle build failed: {0}" -f $_.Exception.Message) "ERROR"
+            }
             $previousFlaskDebug = Get-Item Env:FLASK_DEBUG -ErrorAction SilentlyContinue
             try {
                 if ($DebugMode) {
@@ -789,9 +941,15 @@ function Start-Gui {
             Launch-GuiBrowser -Url "http://127.0.0.1:5000"
             if ($procInfo.StdoutLog) {
                 Start-LogMonitor -Name "gui-flask-out" -Path $procInfo.StdoutLog
+                if (-not $DebugMode) {
+                    Start-LogTail -Name "gui-flask-out" -Path $procInfo.StdoutLog
+                }
             }
             if ($procInfo.StderrLog) {
                 Start-LogMonitor -Name "gui-flask-err" -Path $procInfo.StderrLog
+                if (-not $DebugMode) {
+                    Start-LogTail -Name "gui-flask-err" -Path $procInfo.StderrLog
+                }
             }
         }
         "streamlit" {

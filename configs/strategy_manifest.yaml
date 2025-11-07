@@ -3,45 +3,123 @@ swing_trading:
   description: "Medium-term trades based on higher timeframe trends."
   timeframes: ["4h", "1d"]
   default: "4h"
+  config: "configs/xbtusd_1h_maker_swing.yaml"
 
 trend_breakout:
   label: "Trend Breakout"
   description: "Momentum entries on breakout confirmation."
   timeframes: ["15m", "1h"]
   default: "15m"
+  config: "configs/xbtusd_1h_maker_trend_breakout.yaml"
 
 mean_reversion:
   label: "Mean Reversion"
   description: "Short-term fade of price extremes."
   timeframes: ["5m", "15m"]
   default: "15m"
+  config: "configs/xbtusd_maker_range_scalper.yaml"
 
 reversion_band:
   label: "Band Reversion"
   description: "Volatility band snap-backs."
   timeframes: ["15m", "1h"]
   default: "15m"
+  config: "configs/xbtusd_maker_reversion_band.yaml"
+
+reversion_band_ada:
+  label: "Band Reversion (ADA)"
+  description: "Volatility band snap-backs tuned for ADAUSD."
+  timeframes: ["15m"]
+  default: "15m"
+  config: "configs/adausd_maker_reversion_band.yaml"
+
+reversion_band_doge:
+  label: "Band Reversion (DOGE)"
+  description: "Volatility band snap-backs tuned for DOGEUSD."
+  timeframes: ["15m"]
+  default: "15m"
+  config: "configs/dogeusd_maker_reversion_band.yaml"
+
+reversion_band_eth:
+  label: "Band Reversion (ETH)"
+  description: "Volatility band snap-backs tuned for ETHUSD."
+  timeframes: ["15m"]
+  default: "15m"
+  config: "configs/ethusd_maker_reversion_band.yaml"
+
+reversion_band_sol:
+  label: "Band Reversion (SOL)"
+  description: "Volatility band snap-backs tuned for SOLUSD."
+  timeframes: ["15m"]
+  default: "15m"
+  config: "configs/solusd_maker_reversion_band.yaml"
+
+reversion_band_xrp:
+  label: "Band Reversion (XRP)"
+  description: "Volatility band snap-backs tuned for XRPUSD."
+  timeframes: ["15m"]
+  default: "15m"
+  config: "configs/xrpusd_maker_reversion_band.yaml"
 
 keltner_channel:
   label: "Keltner Channel Riding"
   description: "Trend following using Keltner channels."
   timeframes: ["15m", "1h"]
   default: "1h"
+  config: "configs/xbtusd_maker_keltner_ride.yaml"
+
+keltner_channel_ada:
+  label: "Keltner Channel Riding (ADA)"
+  description: "Keltner trend-riding tuned for ADAUSD."
+  timeframes: ["1h"]
+  default: "1h"
+  config: "configs/adausd_maker_keltner_ride.yaml"
+
+keltner_channel_doge:
+  label: "Keltner Channel Riding (DOGE)"
+  description: "Keltner trend-riding tuned for DOGEUSD."
+  timeframes: ["1h"]
+  default: "1h"
+  config: "configs/dogeusd_maker_keltner_ride.yaml"
+
+keltner_channel_eth:
+  label: "Keltner Channel Riding (ETH)"
+  description: "Keltner trend-riding tuned for ETHUSD."
+  timeframes: ["1h"]
+  default: "1h"
+  config: "configs/ethusd_maker_keltner_ride.yaml"
+
+keltner_channel_sol:
+  label: "Keltner Channel Riding (SOL)"
+  description: "Keltner trend-riding tuned for SOLUSD."
+  timeframes: ["1h"]
+  default: "1h"
+  config: "configs/solusd_maker_keltner_ride.yaml"
+
+keltner_channel_xrp:
+  label: "Keltner Channel Riding (XRP)"
+  description: "Keltner trend-riding tuned for XRPUSD."
+  timeframes: ["1h"]
+  default: "1h"
+  config: "configs/xrpusd_maker_keltner_ride.yaml"
 
 vwap_reversion:
   label: "VWAP Reversion"
   description: "Intraday reversion to VWAP."
   timeframes: ["5m", "15m"]
   default: "5m"
+  config: "configs/xbtusd_maker_vwap_reversion.yaml"
 
 rsi_divergence:
   label: "RSI Divergence"
   description: "Momentum divergence to spot reversals."
   timeframes: ["4h", "1d"]
   default: "4h"
+  config: "configs/xbtusd_maker_rsi_divergence.yaml"
 
 momentum_burst:
   label: "Momentum Burst"
   description: "Ultra-short momentum scalps."
   timeframes: ["1m", "5m"]
   default: "1m"
+  config: "configs/xbtusd_taker_momo_burst.yaml"

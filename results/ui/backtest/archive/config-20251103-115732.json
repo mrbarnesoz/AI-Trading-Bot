@@ -1,0 +1,83 @@
+{
+  "capital_pct": 10.0,
+  "config": "C:\\AI_trading_Bot\\config.yaml",
+  "identity": {
+    "config_stem": "config"
+  },
+  "kind": "backtest",
+  "metadata": {
+    "gate_error": "sample gate fail: trades_count=5 < 500",
+    "initial_capital": 10000.0,
+    "interval": "1h",
+    "mode": "swing",
+    "mode_interval": "1h",
+    "mode_metrics": {
+      "liquidity": 16.57426213511146,
+      "score": 1.7956873848822428,
+      "trend_strength": 0.0960560775089425,
+      "volatility": 0.00472832857322131
+    },
+    "mode_score": 1.7956873848822428,
+    "pair": null,
+    "risk_overrides": {
+      "trail_k": 1.5,
+      "ttp_k": 1.5
+    },
+    "rows": 1384,
+    "selector_stats": {
+      "blocked_low_confidence": 801,
+      "blocked_spread_guard": 119,
+      "trend_override": 135
+    },
+    "strategy": null,
+    "symbol": "XBTUSD",
+    "timeframe": null
+  },
+  "summary": {
+    "annualised_return": -0.0003240181800309161,
+    "annualised_volatility": 0.004627338076515235,
+    "average_capital_fraction": 0.04395953757225435,
+    "avg_holding_bars": 253.5,
+    "avg_loss": 0.0007344063471221923,
+    "avg_slippage_bps": 3.6666666666666665,
+    "avg_win": 0.0,
+    "bars_per_day_est": 24.0,
+    "calc_sharpe": -0.07002258634945652,
+    "expectancy_after_costs": -0.0007344063471221923,
+    "expectancy_no_costs": -0.000367566347122192,
+    "final_equity": 9982.217661552502,
+    "gate_error": "sample gate fail: trades_count=5 < 500",
+    "gross_exposure_avg": 0.04395953757225434,
+    "maker_fill_ratio": 0.6,
+    "maker_trades": 3,
+    "max_drawdown": -0.01774297173008188,
+    "mode": "swing",
+    "mode_liquidity": 16.57426213511146,
+    "mode_score": 1.7956873848822428,
+    "mode_trend_strength": 0.0960560775089425,
+    "mode_volatility": 0.00472832857322131,
+    "payoff_ratio": 0.0,
+    "risk_trail_k": 1.5,
+    "risk_ttp_k": 1.5,
+    "rolling_sharpe_last": 0.0,
+    "selector_blocked_low_confidence": 801.0,
+    "selector_blocked_spread_guard": 119.0,
+    "selector_trend_override": 135.0,
+    "sharpe_ratio": -2.231092262834132,
+    "signal_entries": 736,
+    "signal_flats": 34,
+    "signal_flips": 187,
+    "taker_trades": 2,
+    "total_fees_paid": 1.92e-06,
+    "total_funding_paid": 0.0,
+    "total_return": -0.0017782338447497326,
+    "total_slippage_cost": 0.000984,
+    "trades_count": 5,
+    "trades_per_day": 0.08670520231213873,
+    "trail_exit_trailing_tsl": 2.0,
+    "trail_seed_attached": 3.0,
+    "trail_seed_attempts": 3.0,
+    "trail_updates_seed": 3.0,
+    "win_rate": 0.1813583815028902
+  }
+}

@@ -100,7 +100,28 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 
 
 
-_ASSET_VERSION = str(int(Path(__file__).stat().st_mtime))
+_MODULE_PATH = Path(__file__).resolve()
+_STATIC_DIR = _MODULE_PATH.parent / "static"
+_APP_BUNDLE_PATH = _STATIC_DIR / "js" / "app.bundle.js"
+_VENDOR_DIR = _STATIC_DIR / "vendor"
+
+
+def _vendor_mtime() -> float:
+    if not _VENDOR_DIR.exists():
+        return _MODULE_PATH.stat().st_mtime
+    mtimes = [path.stat().st_mtime for path in _VENDOR_DIR.glob("*.js") if path.exists()]
+    return max(mtimes) if mtimes else _MODULE_PATH.stat().st_mtime
+
+
+_ASSET_VERSION = str(
+    int(
+        max(
+            _MODULE_PATH.stat().st_mtime,
+            _APP_BUNDLE_PATH.stat().st_mtime if _APP_BUNDLE_PATH.exists() else _MODULE_PATH.stat().st_mtime,
+            _vendor_mtime(),
+        )
+    )
+)
 
 _ALLOCATION_PATH = Path(os.getcwd()) / "logs" / "strategy_allocations.json"
 
@@ -663,17 +684,36 @@ def _list_recent_results(limit: int = 10) -> List[dict]:
     records: List[dict] = []
     if not _BACKTEST_RESULTS_DIR.exists():
         return records
-    paths = sorted(
-        _BACKTEST_RESULTS_DIR.glob("*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )[:limit]
+    try:
+        paths = sorted(
+            _BACKTEST_RESULTS_DIR.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return records
+
+    seen_keys: set[str] = set()
+    max_records = max(int(limit or 0), 0) if limit is not None else None
+
     for path in paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         summary = payload.get("summary", {})
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        identity = _result_identity(payload)
+        identity_key = _strategy_key(identity.get("symbol"), identity.get("timeframe"), identity.get("strategy"))
+        seen_token = identity_key or f"file::{path.name.lower()}"
+        if identity_key and identity_key in seen_keys:
+            continue
+        if seen_token in seen_keys:
+            continue
+        seen_keys.add(seen_token)
+
         flags: List[str] = []
         trades = summary.get("trades_count") or summary.get("total_trades")
         sharpe = summary.get("calc_sharpe")
@@ -687,9 +727,7 @@ def _list_recent_results(limit: int = 10) -> List[dict]:
                 flags.append("negative_sharpe")
         except (ValueError, TypeError):
             pass
-        metadata = payload.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
+
         generated_at = (
             payload.get("generated_at")
             or metadata.get("generated_at")
@@ -697,9 +735,12 @@ def _list_recent_results(limit: int = 10) -> List[dict]:
             or _to_iso_timestamp(path.stat().st_mtime)
         )
         generated_iso = _to_iso_timestamp(generated_at) or _to_iso_timestamp(path.stat().st_mtime)
+
         records.append(
             {
                 "file": path.name,
+                "strategy": identity.get("strategy") or payload.get("strategy"),
+                "strategy_label": payload.get("strategy_label") or identity.get("label") or metadata.get("label"),
                 "sharpe": summary.get("calc_sharpe"),
                 "trades": summary.get("trades_count"),
                 "return": summary.get("total_return"),
@@ -715,8 +756,15 @@ def _list_recent_results(limit: int = 10) -> List[dict]:
                 "metadata": metadata,
                 "capital_pct": payload.get("capital_pct"),
                 "generated_at": generated_iso,
+                "identity": identity,
+                "identity_key": identity_key,
+                "plan_job_id": identity.get("plan_job_id"),
+                "child_job_id": identity.get("child_job_id"),
+                "explanations": payload.get("explanations") if isinstance(payload.get("explanations"), dict) else {},
             }
         )
+        if max_records is not None and len(records) >= max_records:
+            break
     return records
 
 
@@ -728,12 +776,33 @@ def _match_backtest_results(job: dict) -> List[Path]:
     job_config = str(job.get("config") or "").lower()
     job_strategy = str(job.get("strategy") or "").lower()
     job_timeframe = str(job.get("timeframe") or "").lower()
-    job_pairs_raw = job.get("pairs") or ([] if job.get("pair") is None else [job.get("pair")])
-    job_pairs = {str(pair).upper() for pair in job_pairs_raw if pair}
+    job_pairs_raw: List[str] = []
+    for key in ("pairs", "symbols"):
+        raw = job.get(key)
+        if isinstance(raw, (list, tuple, set)):
+            job_pairs_raw.extend(raw)
     job_pair_single = job.get("pair")
     if job_pair_single:
-        job_pairs.add(str(job_pair_single).upper())
-    job_id = str(job.get("id") or "")
+        job_pairs_raw.append(job_pair_single)
+    job_symbol_single = job.get("symbol")
+    if job_symbol_single:
+        job_pairs_raw.append(job_symbol_single)
+    job_pairs = {str(pair).upper() for pair in job_pairs_raw if pair}
+    job_id = str(job.get("id") or "").lower()
+    job_parent_id = str(job.get("parent_id") or "").lower()
+    related_child_ids = {job_id} if job_id else set()
+    for child_id in job.get("child_jobs") or []:
+        if child_id:
+            related_child_ids.add(str(child_id).lower())
+    plan_link_ids = set()
+    if job_parent_id:
+        plan_link_ids.add(job_parent_id)
+    plan_hint = str(job.get("plan_job_id") or "").lower()
+    if plan_hint:
+        plan_link_ids.add(plan_hint)
+    job_type = str(job.get("type") or "").lower()
+    if job_type == "backtest_plan" and job_id:
+        plan_link_ids.add(job_id)
 
     try:
         files = sorted(
@@ -756,11 +825,22 @@ def _match_backtest_results(job: dict) -> List[Path]:
         file_name = path.name.lower()
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-        meta_strategy = str(metadata.get("strategy") or metadata.get("mode") or "").lower()
-        meta_timeframe = str(metadata.get("interval") or metadata.get("timeframe") or summary.get("interval") or "").lower()
-        meta_symbol = str(metadata.get("symbol") or metadata.get("pair") or "").upper()
+        identity = _result_identity(payload)
+        meta_strategy = str(identity.get("strategy") or metadata.get("mode") or "").lower()
+        meta_timeframe = str(identity.get("timeframe") or metadata.get("interval") or summary.get("interval") or "").lower()
+        meta_symbol = str(identity.get("symbol") or metadata.get("symbol") or metadata.get("pair") or "").upper()
+        identity_plan_id = str(identity.get("plan_job_id") or "").lower()
+        identity_child_id = str(identity.get("child_job_id") or "").lower()
 
         matched = False
+
+        if job_id and identity_child_id and identity_child_id == job_id:
+            matched = True
+        if not matched and related_child_ids and identity_child_id in related_child_ids:
+            matched = True
+        if not matched and plan_link_ids and identity_plan_id and identity_plan_id in plan_link_ids:
+            matched = True
+
         if job_strategy and meta_strategy and (meta_strategy == job_strategy or job_strategy in meta_strategy):
             if not job_timeframe or not meta_timeframe or meta_timeframe == job_timeframe:
                 matched = True
@@ -794,6 +874,71 @@ def _strategy_key(symbol: str | None, timeframe: str | None, strategy: str | Non
     safe_strategy = (strategy or "").lower().replace(" ", "_")
 
     return f"{safe_symbol}::{safe_timeframe}::{safe_strategy}"
+
+
+def _result_identity(payload: dict) -> dict:
+    """Extract normalized identity attributes from a result payload."""
+    identity = payload.get("identity")
+    if not isinstance(identity, dict):
+        identity = {}
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    def _pick(*values: Optional[str]) -> Optional[str]:
+        for value in values:
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed:
+                    return trimmed
+        return None
+
+    strategy = _pick(
+        identity.get("strategy"),
+        metadata.get("strategy"),
+        metadata.get("mode"),
+        summary.get("strategy"),
+        summary.get("mode"),
+        payload.get("strategy"),
+    )
+    label = _pick(
+        identity.get("label"),
+        metadata.get("label"),
+        payload.get("strategy_label"),
+        strategy.title() if isinstance(strategy, str) else None,
+    )
+    symbol = _pick(
+        identity.get("symbol"),
+        metadata.get("symbol"),
+        metadata.get("pair"),
+        summary.get("symbol"),
+        summary.get("pair"),
+    )
+    timeframe = _pick(
+        identity.get("timeframe"),
+        metadata.get("interval"),
+        metadata.get("timeframe"),
+        summary.get("interval"),
+        summary.get("timeframe"),
+        identity.get("mode_interval"),
+        metadata.get("mode_interval"),
+    )
+    plan_job_id = _pick(identity.get("plan_job_id"), payload.get("plan_job_id"))
+    child_job_id = _pick(identity.get("child_job_id"), payload.get("child_job_id"))
+    config_stem = _pick(identity.get("config_stem"))
+
+    return {
+        "strategy": strategy,
+        "label": label,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "plan_job_id": plan_job_id,
+        "child_job_id": child_job_id,
+        "config_stem": config_stem,
+    }
 
 
 
@@ -982,6 +1127,8 @@ def _list_jobs() -> List[dict]:
     jobs = _read_job_registry()
     normalized: List[dict] = []
     for entry in jobs.values():
+        if entry.get("hidden"):
+            continue
         normalized.append(_normalize_job_entry(entry))
     return sorted(normalized, key=lambda item: item.get("submitted_at", ""), reverse=True)
 
@@ -1253,6 +1400,11 @@ def _strategy_rows() -> List[dict]:
     orchestration = _strategy_orchestration_metrics(auto_data)
     recent_results = _list_recent_results(50)
     recent_by_config = {row.get("config"): row for row in recent_results if row.get("config")}
+    recent_by_identity: Dict[str, dict] = {}
+    for row in recent_results:
+        identity_key = row.get("identity_key")
+        if identity_key and identity_key not in recent_by_identity:
+            recent_by_identity[identity_key] = row
     trade_records = _read_trade_records()
     jobs_by_config: Dict[str, dict] = {}
     for job in _list_jobs():
@@ -1283,6 +1435,10 @@ def _strategy_rows() -> List[dict]:
         recommended_timeframes = manifest_entry.get("timeframes") or []
         default_timeframe = manifest_entry.get("default") or (recommended_timeframes[0] if recommended_timeframes else timeframe)
         strategy_label = manifest_entry.get("label") or strategy.replace("_", " ").title()
+        identity_key = _strategy_key(symbol, timeframe, strategy)
+        recent_result = recent_by_identity.get(identity_key)
+        if recent_result is None and config_path:
+            recent_result = recent_by_config.get(config_path)
         rows.append(
             {
                 "id": row_id,
@@ -1295,7 +1451,7 @@ def _strategy_rows() -> List[dict]:
                 "drawdown": metric.get("max_drawdown"),
                 "trades": trades,
                 "config": config_path,
-                "latest_result": recent_by_config.get(config_path),
+                "latest_result": recent_result,
                 "job": jobs_by_config.get(config_path),
                 "rolling": rolling,
                 "underperforming": underperforming,
@@ -1465,6 +1621,38 @@ def api_get_backtest_result(result_file: str):
         current_app.logger.exception("Failed to read backtest result %s", target_path)
         return jsonify({'error': 'result_read_failed', 'details': str(exc)}), 500
     return jsonify(payload)
+
+
+@api_bp.route('/backtests/results', methods=['DELETE'])
+def api_clear_backtest_results():
+    archive = request.args.get('archive', default='1')
+    archive_results = str(archive).lower() not in {'0', 'false', 'no'}
+    if not _BACKTEST_RESULTS_DIR.exists():
+        return jsonify({'status': 'cleared', 'removed': 0, 'archived': []})
+    files = sorted(_BACKTEST_RESULTS_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    archived_paths: List[str] = []
+    removed = 0
+    if archive_results and files:
+        _BACKTEST_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    for path in files:
+        if archive_results:
+            target = _BACKTEST_ARCHIVE_DIR / path.name
+            counter = 1
+            while target.exists():
+                target = _BACKTEST_ARCHIVE_DIR / f"{path.stem}-{counter}{path.suffix}"
+                counter += 1
+            try:
+                shutil.move(str(path), str(target))
+                archived_paths.append(str(target))
+            except OSError:
+                continue
+        else:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+        removed += 1
+    return jsonify({'status': 'cleared', 'removed': removed, 'archived': archived_paths})
 
 
 @api_bp.route('/trading/status', methods=['GET'])
@@ -1800,21 +1988,55 @@ def api_launch_backtest():
     if errors:
         return jsonify({'error': 'invalid_timeframes', 'details': errors}), 400
 
+    bundle_job_id: Optional[str] = None
+    plan_summary: List[dict] = []
+    plan_jobs_meta: List[dict] = []
+    child_job_ids: List[str] = []
+    if launch_plan:
+        bundle_job_id, plan_summary = tasks.create_backtest_plan_job(
+            plan=launch_plan,
+            capital_pct=capital_pct,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if bundle_job_id:
+            _update_job_registry(bundle_job_id, start_date=start_date, end_date=end_date)
+
     for plan_entry in launch_plan:
         strategy = str(plan_entry.get("strategy") or "")
         plan_symbols = plan_entry.get("symbols") or []
         timeframe = str(plan_entry.get("timeframe") or legacy_timeframe or "1h")
+        hidden = bool(bundle_job_id)
+        plan_meta = {
+            "strategy": strategy,
+            "symbols": plan_symbols,
+            "timeframe": timeframe,
+        }
         if len(plan_symbols) > 1:
-            job_id = tasks.start_backtest_batch(strategy, plan_symbols, timeframe, capital_pct)
+            job_id = tasks.start_backtest_batch(
+                strategy,
+                plan_symbols,
+                timeframe,
+                capital_pct,
+                parent_id=bundle_job_id,
+                hidden=hidden,
+            )
             if job_id:
-                _update_job_registry(job_id, start_date=start_date, end_date=end_date)
-                job_ids.append(job_id)
+                child_job_ids.append(job_id)
+                plan_jobs_meta.append({"job_id": job_id, "plan_entry": plan_meta})
         else:
             symbol = plan_symbols[0] if plan_symbols else ''
-            job_id = tasks.start_backtest(strategy, symbol, timeframe, capital_pct)
+            job_id = tasks.start_backtest(
+                strategy,
+                symbol,
+                timeframe,
+                capital_pct,
+                parent_id=bundle_job_id,
+                hidden=hidden,
+            )
             if job_id:
-                _update_job_registry(job_id, start_date=start_date, end_date=end_date)
-                job_ids.append(job_id)
+                child_job_ids.append(job_id)
+                plan_jobs_meta.append({"job_id": job_id, "plan_entry": plan_meta})
             else:
                 current_app.logger.warning(
                     "Backtest launch failed for strategy=%s symbol=%s timeframe=%s",
@@ -1822,6 +2044,20 @@ def api_launch_backtest():
                     symbol,
                     timeframe,
                 )
+    if bundle_job_id and child_job_ids:
+        _update_job_registry(bundle_job_id, child_jobs=child_job_ids)
+        tasks.spawn_plan_runner(
+            bundle_job_id,
+            plan_jobs_meta,
+            capital_pct,
+            plan_summary,
+            start_date,
+            end_date,
+        )
+        job_ids = [bundle_job_id]
+    else:
+        job_ids = child_job_ids
+
     current_app.logger.info("Backtest jobs queued: %s", job_ids)
     response = {
         'status': 'queued',
@@ -2000,6 +2236,28 @@ def api_trades_metrics_record():
     return jsonify(metrics)
 
 
+@api_bp.route('/backtests/jobs/clear', methods=['POST'])
+def api_clear_job_queue():
+    result = tasks.clear_job_registry()
+    jobs = _list_jobs()
+    return jsonify({'status': 'ok', 'result': result, 'jobs': jobs})
+
+
+@api_bp.route('/guardrails/clear', methods=['POST'])
+def api_guardrails_clear():
+    result = tasks.clear_guardrail_logs()
+    guardrail_logs = _load_guardrail_logs()
+    guardrail_snapshots = _load_guardrail_snapshots()
+    return jsonify(
+        {
+            'status': 'ok',
+            'result': result,
+            'guardrail_logs': guardrail_logs,
+            'guardrail_snapshots': guardrail_snapshots,
+        }
+    )
+
+
 @api_bp.route('/learning/toggle', methods=['POST'])
 def api_toggle_learning():
     payload = request.get_json(force=True) or {}
@@ -2120,3 +2378,13 @@ def api_system_state():
             'kafka': kafka_status,
         }
     )
+
+
+@api_bp.route('/ui/diagnostic', methods=['POST'])
+def api_ui_diagnostic():
+    payload = request.get_json(silent=True) or {}
+    kind = payload.get('kind', 'diagnostic')
+    message = payload.get('message', '')
+    stack = payload.get('stack')
+    current_app.logger.error("UI %s: %s %s", kind, message, stack or '')
+    return jsonify({'status': 'ok'})

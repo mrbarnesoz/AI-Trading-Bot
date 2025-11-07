@@ -106,6 +106,20 @@ async function apiRequest(path, { method = "POST", body = undefined } = {}) {
   return payload;
 }
 
+function describeResultTimestamp(value) {
+  if (!value) {
+    return "";
+  }
+  if (typeof dayjs === "undefined") {
+    return `Generated at ${value}`;
+  }
+  const parsed = dayjs(value);
+  if (!parsed.isValid()) {
+    return `Generated at ${value}`;
+  }
+  return `Generated ${parsed.fromNow()}`;
+}
+
 function NotificationBar({ alerts, messages, onDismiss }) {
   const items = [];
   if (Array.isArray(alerts)) {
@@ -427,20 +441,6 @@ function BacktestResultModal({ preview, onClose }) {
     navigator.clipboard.writeText(path).catch(() => {});
   };
 
-  const describeGenerated = (value) => {
-    if (!value) {
-      return "";
-    }
-    if (typeof dayjs === "undefined") {
-      return `Generated at ${value}`;
-    }
-    const parsed = dayjs(value);
-    if (!parsed.isValid()) {
-      return `Generated at ${value}`;
-    }
-    return `Generated ${parsed.fromNow()}`;
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8 backdrop-blur-sm">
       <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded-lg border border-slate-800 bg-slate-950 shadow-2xl">
@@ -484,7 +484,9 @@ function BacktestResultModal({ preview, onClose }) {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-slate-100">{result.file || "Result"}</div>
-                      <div className="text-xs text-slate-500">{describeGenerated(result.generated_at)}</div>
+                      <div className="text-xs text-slate-500">
+                        {describeResultTimestamp(result.generated_at)}
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
                       {result.path && (
@@ -549,6 +551,10 @@ function BacktestPanel({
   capitalOptions = [],
   onNotify = () => {},
   onRefresh = () => {},
+  onClearJobs = () => {},
+  clearingJobs = false,
+  onClearGuardrails = () => {},
+  clearingGuardrails = false,
 }) {
   const [form, setForm] = useState({
     strategies: [],
@@ -560,6 +566,8 @@ function BacktestPanel({
   });
   const [resultPreview, setResultPreview] = useState(null);
   const [archivingJobId, setArchivingJobId] = useState(null);
+  const [clearingResults, setClearingResults] = useState(false);
+  const [openingResultId, setOpeningResultId] = useState(null);
 
   useEffect(() => {
     if (!form.strategies.length && strategyOptions.length) {
@@ -665,11 +673,54 @@ function BacktestPanel({
       const jobConfig = (job.config || "").toLowerCase();
       const jobStrategy = (job.strategy || "").toLowerCase();
       const jobTimeframe = (job.timeframe || "").toLowerCase();
+      const planSummary = Array.isArray(job.plan_summary) ? job.plan_summary : [];
+      const strategySet = new Set(
+        planSummary
+          .map((item) => String(item.strategy || "").toLowerCase())
+          .filter((value) => value)
+      );
+      const timeframeSet = new Set(
+        planSummary
+          .map((item) => String(item.timeframe || "").toLowerCase())
+          .filter((value) => value)
+      );
+      const symbolSet = new Set(
+        planSummary
+          .flatMap((item) => item.symbols || [])
+          .map((symbol) => String(symbol).toUpperCase())
+          .filter((value) => value)
+      );
       const jobPairs = Array.isArray(job.pairs)
         ? job.pairs.map((symbol) => String(symbol).toUpperCase())
         : job.pair
         ? [String(job.pair).toUpperCase()]
         : [];
+      jobPairs.forEach((symbol) => symbolSet.add(symbol));
+
+      const matchesStrategy = (value) => {
+        const lower = (value || "").toLowerCase();
+        if (!lower) {
+          return false;
+        }
+        if (strategySet.size) {
+          return strategySet.has(lower);
+        }
+        return jobStrategy && (lower === jobStrategy || lower.includes(jobStrategy));
+      };
+
+      const matchesTimeframe = (value) => {
+        const lower = (value || "").toLowerCase();
+        if (timeframeSet.size) {
+          if (!lower) {
+            return false;
+          }
+          return timeframeSet.has(lower);
+        }
+        if (!jobTimeframe) {
+          return true;
+        }
+        return !value || lower === jobTimeframe;
+      };
 
       const matches = results.filter((result) => {
         if (!result || typeof result !== "object") {
@@ -687,20 +738,22 @@ function BacktestPanel({
         const metaStrategy = (meta.strategy || meta.mode || "").toLowerCase();
         const metaTimeframe = (meta.interval || meta.timeframe || "").toLowerCase();
         const metaSymbol = (meta.symbol || meta.pair || "").toUpperCase();
-        if (jobStrategy && metaStrategy && (metaStrategy === jobStrategy || metaStrategy.includes(jobStrategy))) {
-          if (!jobTimeframe || !metaTimeframe || metaTimeframe === jobTimeframe) {
+        if (metaStrategy && matchesStrategy(metaStrategy)) {
+          if (matchesTimeframe(metaTimeframe)) {
             return true;
           }
         }
-        if (jobPairs.length && metaSymbol) {
-          if (jobPairs.includes(metaSymbol)) {
-            if (!jobTimeframe || !metaTimeframe || metaTimeframe === jobTimeframe) {
+        if (symbolSet.size && metaSymbol) {
+          if (symbolSet.has(metaSymbol)) {
+            if (matchesTimeframe(metaTimeframe)) {
               return true;
             }
           }
         }
-        if (jobPairs.length && fileName) {
-          const includesSymbol = jobPairs.some((symbol) => fileName.includes(symbol.toLowerCase()));
+        if (symbolSet.size && fileName) {
+          const includesSymbol = Array.from(symbolSet).some((symbol) =>
+            fileName.includes(symbol.toLowerCase())
+          );
           if (includesSymbol) {
             return true;
           }
@@ -748,10 +801,79 @@ function BacktestPanel({
     }
     const related = collectResultsForJob(job);
     if (!related.length) {
-      onNotify(`No matching backtest results found for ${job.strategy || job.id || "selection"}.`, "warning");
+      const summaryLabels = Array.isArray(job.plan_summary)
+        ? job.plan_summary.map((item) => item.label || item.strategy).filter(Boolean)
+        : [];
+      const descriptor =
+        summaryLabels.length > 0
+          ? summaryLabels.join(", ")
+          : job.strategy || job.id || "selection";
+      onNotify(`No matching backtest results found for ${descriptor}.`, "warning");
       return;
     }
     setResultPreview({ job, results: related });
+  };
+
+  const handleResultView = async (result) => {
+    if (!result || !result.file) {
+      onNotify("Result file reference missing.", "warning");
+      return;
+    }
+    try {
+      setOpeningResultId(result.file);
+      const payload = await apiRequest(
+        `/api/backtests/results/${encodeURIComponent(result.file)}`,
+        { method: "GET" }
+      );
+      const detailMeta = payload && payload.metadata ? payload.metadata : {};
+      const identity = result.identity || {};
+      const jobStub = {
+        strategy: identity.strategy || detailMeta.strategy || result.strategy,
+        timeframe: detailMeta.interval || detailMeta.timeframe || result.timeframe,
+        pairs: identity.symbol ? [identity.symbol] : undefined,
+        pair: identity.symbol || detailMeta.symbol || detailMeta.pair,
+        id: result.file,
+      };
+      setResultPreview({
+        job: jobStub,
+        results: [
+          {
+            ...payload,
+            file: result.file,
+            path: result.path || payload.path,
+            generated_at: result.generated_at || payload.generated_at,
+          },
+        ],
+      });
+    } catch (err) {
+      onNotify(`Failed to open result: ${err.message}`, "critical");
+    } finally {
+      setOpeningResultId(null);
+    }
+  };
+
+  const handleClearResults = async () => {
+    if (clearingResults) {
+      return;
+    }
+    try {
+      if (typeof window !== "undefined") {
+        const confirmed = window.confirm("Clear all recent results from the panel?");
+        if (!confirmed) {
+          return;
+        }
+      }
+      setClearingResults(true);
+      await apiRequest("/api/backtests/results", { method: "DELETE" });
+      onNotify("Cleared latest results.", "success");
+      if (typeof onRefresh === "function") {
+        onRefresh();
+      }
+    } catch (err) {
+      onNotify(`Failed to clear results: ${err.message}`, "critical");
+    } finally {
+      setClearingResults(false);
+    }
   };
 
   const handleArchiveClick = async (event, job) => {
@@ -971,104 +1093,263 @@ function BacktestPanel({
 
       <div className="grid gap-5 md:grid-cols-2">
         <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/50 p-4">
-          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">
-            Job queue
-          </h3>
-          <p className="text-xs text-slate-500">
-            Double-click a job to open its recent backtest results.
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">
+                Job queue
+              </h3>
+              <p className="text-xs text-slate-500">
+                Double-click a job to open its recent backtest results.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={onClearJobs}
+              disabled={clearingJobs}
+            >
+              {clearingJobs ? "Clearing…" : "Clear jobs"}
+            </button>
+          </div>
           <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
             {jobs.length === 0 && <p className="text-sm text-slate-500">No queued jobs.</p>}
-            {jobs.map((job) => (
-              <div
-                key={job.id}
-                className="rounded border border-slate-800 p-3"
-                onDoubleClick={() => handleJobDoubleClick(job)}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-100">
-                    {job.type || "job"} • {job.status || "unknown"}
-                  </span>
-                  <span className="text-xs text-slate-400" title={job.submitted_at || ""}>
-                    {job.submitted_at ? dayjs(job.submitted_at).fromNow() : ""}
-                  </span>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-slate-400">
-                  {job.strategy && <div>Strategy: {job.strategy}</div>}
-                  {job.pair && <div>Pair: {job.pair}</div>}
-                  {job.timeframe && <div>TF: {job.timeframe}</div>}
-                  {job.capital_pct !== undefined && <div>Capital %: {job.capital_pct}</div>}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                  <button
-                    className="rounded bg-slate-800 px-3 py-1 font-semibold text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    onClick={(event) => handleArchiveClick(event, job)}
-                    disabled={
-                      archivingJobId === job.id ||
-                      !["completed", "failed", "stopped", "cancelled"].includes(String(job.status || "").toLowerCase())
-                    }
-                  >
-                    {archivingJobId === job.id ? "Archiving..." : "Archive"}
-                  </button>
-                </div>
-                {job.error && (
-                  <div className="mt-2 rounded bg-red-900/40 px-3 py-2 text-xs text-red-200">
-                    {job.error}
+            {jobs.map((job) => {
+              const planSummary = Array.isArray(job.plan_summary) ? job.plan_summary : [];
+              const planLabels = planSummary.map((item) => item.label || item.strategy).filter(Boolean);
+              const planTimeframes = planSummary
+                .map((item) => item.timeframe)
+                .filter((value, index, array) => value && array.indexOf(value) === index);
+              const planSymbols = planSummary
+                .flatMap((item) => item.symbols || [])
+                .filter((value, index, array) => array.indexOf(value) === index);
+              const planCount = planSummary.length || (Array.isArray(job.plan) ? job.plan.length : 0);
+              return (
+                <div
+                  key={job.id}
+                  className="rounded border border-slate-800 p-3"
+                  onDoubleClick={() => handleJobDoubleClick(job)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold text-slate-100">
+                        {job.type || "job"} • {job.status || "unknown"}
+                      </span>
+                      {planCount > 0 && (
+                        <span className="ml-2 rounded bg-slate-800/70 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                          {planCount} strategy{planCount === 1 ? "" : " combos"}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs text-slate-400" title={job.submitted_at || ""}>
+                      {job.submitted_at ? dayjs(job.submitted_at).fromNow() : ""}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))}
+                  <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-slate-400">
+                    {planLabels.length ? (
+                      <div className="col-span-2">
+                        Strategies: <span className="text-slate-200">{planLabels.join(", ")}</span>
+                      </div>
+                    ) : (
+                      job.strategy && <div>Strategy: {job.strategy}</div>
+                    )}
+                    {planTimeframes.length ? (
+                      <div className="col-span-2">
+                        Timeframes: <span className="text-slate-200">{planTimeframes.join(", ")}</span>
+                      </div>
+                    ) : (
+                      job.timeframe && <div>TF: {job.timeframe}</div>
+                    )}
+                    {planSymbols.length ? (
+                      <div className="col-span-2">
+                        Symbols: <span className="text-slate-200">{planSymbols.join(", ")}</span>
+                      </div>
+                    ) : (
+                      job.pair && <div>Pair: {job.pair}</div>
+                    )}
+                    {job.capital_pct !== undefined && <div>Capital %: {job.capital_pct}</div>}
+                  </div>
+                  {planSummary.length > 0 && (
+                    <div className="mt-3 space-y-3 rounded border border-slate-800/70 bg-slate-950/30 px-3 py-2 text-xs text-slate-200">
+                      {planSummary.map((item, idx) => (
+                        <div key={`${job.id}-${item.strategy}-${item.timeframe}-${idx}`} className="space-y-1">
+                          <div className="font-semibold text-slate-100">
+                            {item.label || item.strategy} • {item.timeframe || "—"}
+                          </div>
+                          <div className="text-slate-400">{item.entry_reason}</div>
+                          <div className="text-slate-400">Exit plan: {item.exit_reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    <button
+                      className="rounded bg-slate-800 px-3 py-1 font-semibold text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={(event) => handleArchiveClick(event, job)}
+                      disabled={
+                        archivingJobId === job.id ||
+                        !["completed", "failed", "stopped", "cancelled"].includes(
+                          String(job.status || "").toLowerCase()
+                        )
+                      }
+                    >
+                      {archivingJobId === job.id ? "Archiving..." : "Archive"}
+                    </button>
+                  </div>
+                  {job.error && (
+                    <div className="mt-2 rounded bg-red-900/40 px-3 py-2 text-xs text-red-200">
+                      {job.error}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
         <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/50 p-4">
-          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">
-            Latest results
-          </h3>
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">
+              Latest results
+            </h3>
+            <button
+              type="button"
+              className="rounded bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleClearResults}
+              disabled={clearingResults || results.length === 0}
+            >
+              {clearingResults ? "Clearing…" : "Clear"}
+            </button>
+          </div>
           <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
             {results.length === 0 && <p className="text-sm text-slate-500">No results yet.</p>}
-            {results.map((result) => (
-              <div key={result.path || result.config} className="rounded border border-slate-800 p-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-100">
-                    {result.strategy || result.config || "result"}
-                  </span>
-                  <span className="text-xs text-slate-400">
-                    {result.completed_at ? dayjs(result.completed_at).fromNow() : ""}
-                  </span>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-slate-400">
-                  {result.metrics &&
-                    Object.entries(result.metrics)
-                      .slice(0, 6)
-                      .map(([key, value]) => (
-                        <div key={key}>
-                          {key}: {typeof value === "number" ? value.toFixed(3) : value}
+            {results.map((result) => {
+              const identity = result.identity || {};
+              const summary = result.summary || {};
+              const explanations = result.explanations || {};
+              const title =
+                result.strategy_label ||
+                identity.label ||
+                result.strategy ||
+                identity.strategy ||
+                result.config ||
+                "Result";
+              const subtitleParts = [];
+              const symbol = identity.symbol || (result.metadata && (result.metadata.symbol || result.metadata.pair));
+              const timeframe =
+                identity.timeframe ||
+                (result.metadata && (result.metadata.interval || result.metadata.timeframe));
+              if (symbol) {
+                subtitleParts.push(symbol);
+              }
+              if (timeframe) {
+                subtitleParts.push(timeframe);
+              }
+              if (result.capital_pct) {
+                subtitleParts.push(`${result.capital_pct}% capital`);
+              }
+              const metrics = [
+                { label: "Sharpe", value: summary.calc_sharpe ?? result.sharpe },
+                { label: "Trades", value: summary.trades_count ?? result.trades },
+                { label: "Return", value: summary.total_return ?? result.return },
+                { label: "Max DD", value: summary.max_drawdown },
+              ].filter(
+                (metric) =>
+                  metric.value !== undefined &&
+                  metric.value !== null &&
+                  metric.value !== "" &&
+                  !Number.isNaN(metric.value)
+              );
+              const entryReason = explanations.entry;
+              const exitReason = explanations.exit;
+              return (
+                <div key={result.path || result.file || result.config} className="rounded border border-slate-800 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-100">{title}</div>
+                      {subtitleParts.length > 0 && (
+                        <div className="text-xs text-slate-400">{subtitleParts.join(" • ")}</div>
+                      )}
+                      {describeResultTimestamp(result.generated_at) && (
+                        <div className="text-[11px] text-slate-500">
+                          {describeResultTimestamp(result.generated_at)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs text-slate-200">
+                      <button
+                        className="rounded bg-slate-800 px-3 py-1 font-semibold hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={() => handleResultView(result)}
+                        disabled={openingResultId === result.file || !result.file}
+                      >
+                        {openingResultId === result.file ? "Opening…" : "View details"}
+                      </button>
+                      {result.file && (
+                        <a
+                          className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800"
+                          href={`/api/backtests/results/${encodeURIComponent(result.file)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open JSON
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  {entryReason && (
+                    <p className="mt-2 text-xs text-slate-300">
+                      Purpose: <span className="text-slate-100">{entryReason}</span>
+                    </p>
+                  )}
+                  {exitReason && (
+                    <p className="text-xs text-slate-400">Exit plan: {exitReason}</p>
+                  )}
+                  {metrics.length > 0 && (
+                    <div className="mt-2 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                      {metrics.map((metric) => (
+                        <div key={metric.label} className="rounded bg-slate-950/50 px-2 py-1.5">
+                          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                            {metric.label}
+                          </div>
+                          <div className="text-sm font-semibold text-slate-100">
+                            {typeof metric.value === "number" ? metric.value.toFixed(4) : metric.value}
+                          </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {Array.isArray(result.flags) && result.flags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {result.flags.map((flag) => (
+                        <span
+                          key={flag}
+                          className="rounded bg-amber-900/30 px-2 py-0.5 text-xs text-amber-200"
+                        >
+                          {flag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {Array.isArray(result.flags) && result.flags.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {result.flags.map((flag) => (
-                      <span
-                        key={flag}
-                        className="rounded bg-amber-900/30 px-2 py-0.5 text-xs text-amber-200"
-                      >
-                        {flag}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
 
       <div className="grid gap-5 md:grid-cols-2">
         <div className="rounded-lg border border-red-900/40 bg-red-950/40 p-4">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-red-200">
-            Guardrail violations (latest)
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-red-200">
+              Guardrail violations (latest)
+            </h3>
+            <button
+              type="button"
+              className="rounded bg-red-900/60 px-3 py-1.5 text-xs font-semibold text-red-100 hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={onClearGuardrails}
+              disabled={clearingGuardrails}
+            >
+              {clearingGuardrails ? "Clearing…" : "Clear logs"}
+            </button>
+          </div>
           <div className="mt-3 space-y-3 max-h-64 overflow-y-auto pr-1">
             {guardrailLogs.length === 0 && (
               <p className="text-sm text-red-200/70">No guardrail breaches recorded.</p>
@@ -2043,6 +2324,11 @@ function TradesPanel({ data, strategyMetadata = {}, onClear, clearing = false })
 function DecisionTelemetry({ data }) {
   const metrics = (data && data.metrics) || {};
   const events = Array.isArray(data && data.events) ? data.events : [];
+  const status = (data && data.status) || "idle";
+  const heartbeat = data && data.heartbeat;
+  const activeModes = Array.isArray(data && data.active_modes) ? data.active_modes : [];
+  const lastEventAt =
+    data && data.last_event_at ? data.last_event_at : metrics.last_event_at || null;
 
   const stageEntries = Object.entries(metrics.by_stage || {}).map(([stage, count]) => ({
     stage,
@@ -2060,15 +2346,31 @@ function DecisionTelemetry({ data }) {
       .replace(/_/g, " ")
       .replace(/\b\w/g, (match) => match.toUpperCase());
 
+  const statusLabel =
+    status === "scanning"
+      ? `Scanning${activeModes.length ? ` (${activeModes.join(", ")})` : ""}`
+      : "Idle";
+  const statusColour =
+    status === "scanning"
+      ? "bg-emerald-900/40 text-emerald-200 border border-emerald-800/60"
+      : "bg-slate-800 text-slate-200 border border-slate-700";
+  const heartbeatLabel = heartbeat ? dayjs(heartbeat).fromNow() : "No heartbeat yet";
+  const lastEventLabel = lastEventAt ? dayjs(lastEventAt).fromNow() : "Never";
+
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-200">
           Decision telemetry
         </h3>
-        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-200">
-          {metrics.total_events || 0} events
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-200">
+            {metrics.total_events || 0} events
+          </span>
+          <span className={clsx("rounded-full px-2 py-0.5 text-[11px] font-semibold", statusColour)}>
+            {statusLabel}
+          </span>
+        </div>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-2">
@@ -2152,7 +2454,12 @@ function DecisionTelemetry({ data }) {
               </div>
             ))
           ) : (
-            <div className="px-3 py-4 text-slate-500">No events recorded yet.</div>
+            <div className="px-3 py-4 space-y-1 text-slate-500">
+              <div>No events recorded yet.</div>
+              <div className="text-[11px] text-slate-400">
+                Scanner status: {statusLabel}. Heartbeat {heartbeatLabel}. Last event {lastEventLabel}.
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -2525,6 +2832,8 @@ const [launching, setLaunching] = useState(false);
 const [kafkaWorking, setKafkaWorking] = useState(false);
 const [tradingWorking, setTradingWorking] = useState({ paper: false, live: false, stop: null });
 const [clearingTrades, setClearingTrades] = useState(false);
+const [clearingJobs, setClearingJobs] = useState(false);
+const [clearingGuardrails, setClearingGuardrails] = useState(false);
 
 const pushMessage = useCallback((text, level = "info") => {
   setMessages((prev) => [
@@ -2555,6 +2864,38 @@ const handleClearTrades = async () => {
     pushMessage(`Clear failed: ${err.message}`, "critical");
   } finally {
     setClearingTrades(false);
+  }
+};
+
+const handleClearJobs = async () => {
+  if (clearingJobs) {
+    return;
+  }
+  try {
+    setClearingJobs(true);
+    await apiRequest("/api/backtests/jobs/clear", { method: "POST" });
+    pushMessage("Job queue cleared.", "success");
+    backtestsPoll.refresh();
+  } catch (err) {
+    pushMessage(`Clear job queue failed: ${err.message}`, "critical");
+  } finally {
+    setClearingJobs(false);
+  }
+};
+
+const handleClearGuardrails = async () => {
+  if (clearingGuardrails) {
+    return;
+  }
+  try {
+    setClearingGuardrails(true);
+    await apiRequest("/api/guardrails/clear", { method: "POST" });
+    pushMessage("Guardrail logs cleared.", "success");
+    backtestsPoll.refresh();
+  } catch (err) {
+    pushMessage(`Clear guardrail logs failed: ${err.message}`, "critical");
+  } finally {
+    setClearingGuardrails(false);
   }
 };
 
@@ -2826,6 +3167,10 @@ return (
           capitalOptions={capitalOptions}
           onNotify={pushMessage}
           onRefresh={backtestsPoll.refresh}
+          onClearJobs={handleClearJobs}
+          clearingJobs={clearingJobs}
+          onClearGuardrails={handleClearGuardrails}
+          clearingGuardrails={clearingGuardrails}
         />
       </section>
 

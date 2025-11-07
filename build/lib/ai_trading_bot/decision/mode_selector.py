@@ -35,21 +35,39 @@ class ModeDecision:
     metrics: Dict[str, float]
 
 
-def _resolve_start_date(base_start: Optional[str], lookback_days: int) -> str:
+def _resolve_start_date(
+    base_start: Optional[str],
+    lookback_days: int,
+    end_date: Optional[str] = None,
+) -> str:
+    lookback_days = max(int(lookback_days or 1), 1)
     reference = pd.Timestamp.now(tz="UTC")
-    lookback_threshold = reference - pd.Timedelta(days=lookback_days)
+    end_ts: Optional[pd.Timestamp] = None
+    if end_date:
+        try:
+            end_ts = pd.to_datetime(end_date, utc=True)
+        except (TypeError, ValueError):
+            end_ts = None
+    if end_ts is not None:
+        reference = min(reference, end_ts)
 
-    candidates = [lookback_threshold]
+    candidate = reference - pd.Timedelta(days=lookback_days)
+
     if base_start:
         try:
             base_ts = pd.to_datetime(base_start, utc=True)
         except (TypeError, ValueError):
             base_ts = None
         if base_ts is not None:
-            candidates.append(base_ts)
+            if end_ts is not None:
+                base_ts = min(base_ts, end_ts)
+            candidate = min(candidate, base_ts)
 
-    chosen = max(candidates)
-    return chosen.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if end_ts is not None and candidate >= end_ts:
+        candidate = end_ts - pd.Timedelta(days=lookback_days)
+
+    candidate = min(candidate, reference)
+    return candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _score_mode(price_data: pd.DataFrame, mode: StrategyModeConfig) -> Dict[str, float]:
@@ -113,7 +131,11 @@ def select_mode(config: AppConfig, force_download: bool = False) -> ModeDecision
     for mode in config.modes:
         data_cfg = replace(config.data)
         data_cfg.interval = mode.interval
-        data_cfg.start_date = _resolve_start_date(config.data.start_date, mode.lookback_days)
+        data_cfg.start_date = _resolve_start_date(
+            config.data.start_date,
+            mode.lookback_days,
+            end_date=config.data.end_date,
+        )
         data_cfg.end_date = config.data.end_date
         if not data_cfg.source:
             data_cfg.source = "bitmex"

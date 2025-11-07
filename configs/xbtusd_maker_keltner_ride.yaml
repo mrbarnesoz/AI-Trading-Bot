@@ -46,7 +46,7 @@ backtest:
   slippage_bps_target: 0.7
   trades_per_day_target: 1.0
   max_drawdown_floor: -0.18
-  min_gate_trades: 150
+  min_gate_trades: 20
   min_slippage_bps: 0.4
 filters:
   allow_long: true
@@ -55,7 +55,7 @@ filters:
   trend_slope_lookback: 48
   min_trend_slope: 0.0
   hysteresis_k_atr: 0.4
-  min_confidence: 0.55
+  min_confidence: 0.45
   min_adx: 15
 signals:
   post:

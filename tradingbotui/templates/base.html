@@ -26,14 +26,80 @@
     <noscript>
       <div class="p-4 bg-red-800 text-white text-center">JavaScript is required to run the trading dashboard.</div>
     </noscript>
-    <div id="app-root" class="min-h-screen"></div>
+    <div id="app-root" class="min-h-screen flex items-center justify-center text-slate-400">
+      Loading trading dashboard…
+    </div>
     {% block content %}{% endblock %}
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script crossorigin src="https://unpkg.com/dayjs@1/dayjs.min.js"></script>
-    <script crossorigin src="https://unpkg.com/dayjs@1/plugin/relativeTime.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script type="text/babel" data-presets="env,react" src="{{ url_for('static', filename='js/app.jsx') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='vendor/react.production.min.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='vendor/react-dom.production.min.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='vendor/dayjs.min.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='vendor/dayjs-plugin-relativeTime.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}?v={{ asset_version }}"></script>
+    <script>
+      (function () {
+        const root = document.getElementById("app-root");
+        const postDiagnostic = (payload) => {
+          try {
+            fetch("/api/ui/diagnostic", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify(payload),
+            }).catch(() => {});
+          } catch (err) {
+            console.warn("Unable to post UI diagnostic", err);
+          }
+        };
+        const showBanner = (text, colour = "bg-red-900") => {
+          const banner = document.createElement("div");
+          banner.textContent = text;
+          banner.className = `${colour} text-white text-center px-4 py-2 font-semibold text-sm`;
+          document.body.prepend(banner);
+        };
+
+        const showDiagnostic = (label, detail) => {
+          if (!root) {
+            return;
+          }
+          const panel = document.createElement("div");
+          panel.className =
+            "absolute bottom-4 right-4 bg-slate-900/80 text-xs text-slate-200 px-4 py-3 rounded shadow-xl border border-slate-700 max-w-md space-y-1";
+          const header = document.createElement("div");
+          header.className = "font-semibold text-red-300";
+          header.textContent = label;
+          panel.appendChild(header);
+          const body = document.createElement("div");
+          body.textContent = detail;
+          panel.appendChild(body);
+          document.body.appendChild(panel);
+        };
+
+        if (typeof React === "undefined" || typeof ReactDOM === "undefined") {
+          showBanner(
+            "UI assets failed to load. Reload RunBot.ps1 or check network connectivity."
+          );
+          console.error("React globals missing; UI cannot render.");
+          postDiagnostic({ kind: "assets_missing" });
+          return;
+        }
+
+        window.addEventListener("error", (evt) => {
+          showBanner("JavaScript error – see diagnostic overlay.");
+          showDiagnostic("Runtime error", evt.message || "Unknown error");
+          postDiagnostic({ kind: "error", message: evt.message || "", stack: (evt.error && evt.error.stack) || null });
+        });
+
+        window.addEventListener("unhandledrejection", (evt) => {
+          const message =
+            (evt.reason && evt.reason.message) ||
+            evt.reason ||
+            "Unhandled promise rejection.";
+          showBanner("Promise rejection – see diagnostic overlay.", "bg-amber-900");
+          showDiagnostic("Unhandled rejection", message);
+          postDiagnostic({ kind: "rejection", message });
+        });
+      })();
+    </script>
+    <script defer src="{{ url_for('static', filename='js/app.bundle.js') }}?v={{ asset_version }}"></script>
   </body>
 </html>

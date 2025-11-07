@@ -52,7 +52,7 @@ backtest:
   slippage_bps_target: 2.0
   trades_per_day_target: 2.0
   max_drawdown_floor: -0.12
-  min_gate_trades: 500
+  min_gate_trades: 20
   min_slippage_bps: 0.5
 filters:
   allow_long: true
