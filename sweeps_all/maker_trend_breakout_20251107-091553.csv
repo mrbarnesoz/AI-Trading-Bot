@@ -1,0 +1,4 @@
+timeframe,donchian_n,confirm_k_atr,signals.post.min_hold_bars,signals.post.hysteresis_k_atr,trailing.trail_k,trailing.ttp_k,risk.cap_fraction,meta.trend.min_strength,meta.confidence.min,execution.cancel_spread_bps,total_return,annualised_return,annualised_volatility,calc_sharpe,expectancy_after_costs,max_drawdown,trades_count,avg_slippage_bps,maker_fill_ratio,pass
+1h,20,0.5,12,0.3,2.0,2.0,0.02,0.25,0.55,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+1h,20,0.5,12,0.3,2.0,2.0,0.02,0.25,0.55,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+1h,20,0.5,12,0.3,2.0,2.0,0.02,0.25,0.55,3.0,0.027702030216470108,0.00027722899842141935,0.002417930845352397,0.11465547038050838,0.0026340336640652733,-0.01442446155673538,27,4.21676439444224,0.48148148148148145,False

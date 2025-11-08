@@ -2850,6 +2850,25 @@ const dismissMessage = (id) => {
   setMessages((prev) => prev.filter((msg) => msg.id !== id));
 };
 
+const [bitmexCreds, setBitmexCreds] = useState({ configured: false });
+const [bitmexForm, setBitmexForm] = useState({ api_key: "", api_secret: "" });
+const [savingBitmexCreds, setSavingBitmexCreds] = useState(false);
+
+const fetchBitmexCreds = useCallback(async () => {
+  try {
+    const data = await apiRequest("/api/exchanges/bitmex/credentials", { method: "GET" });
+    if (data) {
+      setBitmexCreds(data);
+    }
+  } catch (err) {
+    pushMessage(`Unable to load BitMEX credentials: ${err.message}`, "warning");
+  }
+}, [pushMessage]);
+
+useEffect(() => {
+  fetchBitmexCreds();
+}, [fetchBitmexCreds]);
+
 const handleClearTrades = async () => {
   if (clearingTrades) {
     return;
@@ -3113,6 +3132,40 @@ const handleKafkaAction = async (action) => {
   }
 };
 
+const handleBitmexInputChange = (field) => (event) => {
+  const value = event.target.value;
+  setBitmexForm((prev) => ({ ...prev, [field]: value }));
+};
+
+const handleBitmexSubmit = async (event) => {
+  event.preventDefault();
+  if (savingBitmexCreds) {
+    return;
+  }
+  const key = bitmexForm.api_key.trim();
+  const secret = bitmexForm.api_secret.trim();
+  if (!key || !secret) {
+    pushMessage("API key and secret are required.", "warning");
+    return;
+  }
+  try {
+    setSavingBitmexCreds(true);
+    const payload = await apiRequest("/api/exchanges/bitmex/credentials", {
+      method: "POST",
+      body: { api_key: key, api_secret: secret },
+    });
+    if (payload) {
+      setBitmexCreds(payload);
+      setBitmexForm({ api_key: "", api_secret: "" });
+    }
+    pushMessage("BitMEX credentials updated.", "success");
+  } catch (err) {
+    pushMessage(`Update failed: ${err.message}`, "critical");
+  } finally {
+    setSavingBitmexCreds(false);
+  }
+};
+
 const alertsCombined = [
   ...(strategiesPoll.data && strategiesPoll.data.alerts ? strategiesPoll.data.alerts : []),
   ...(systemPoll.data && systemPoll.data.alerts ? systemPoll.data.alerts : []),
@@ -3142,6 +3195,65 @@ return (
         </p>
         <PortfolioSummary portfolio={strategiesPoll.data && strategiesPoll.data.portfolio} />
       </header>
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-white">BitMEX API access</h2>
+        <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+          <p className="text-sm text-slate-300">
+            Provide a BitMEX API key so the bot can download market data and place simulated or live orders.
+            Use an API key with <span className="font-semibold text-white">Order/Trade</span> permissions only
+            (no withdrawal rights). If you rotate keys or switch accounts, submitting the form overwrites the existing credentials.
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-slate-300">
+            <li>Create the key under <span className="font-semibold">API Key Restrictions → \"Order\"</span>.</li>
+            <li>Disable withdrawal permissions and keep the key scoped to the trading sub-account you intend to automate.</li>
+            <li>You can remove or replace the key at any time by saving new values below.</li>
+          </ul>
+          <div className="text-xs text-slate-400">
+            Status:{" "}
+            {bitmexCreds.configured ? (
+              <span className="text-emerald-300">
+                Configured {bitmexCreds.api_key_preview ? `(key ${bitmexCreds.api_key_preview})` : ""}
+                {bitmexCreds.updated_at ? ` · Updated ${dayjs(bitmexCreds.updated_at).fromNow()}` : ""}
+              </span>
+            ) : (
+              <span className="text-amber-300">Not configured</span>
+            )}
+          </div>
+          <form className="space-y-3" onSubmit={handleBitmexSubmit}>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400">API key</label>
+              <input
+                type="text"
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                value={bitmexForm.api_key}
+                onChange={handleBitmexInputChange("api_key")}
+                placeholder="BMEX123..."
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400">API secret</label>
+              <input
+                type="password"
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                value={bitmexForm.api_secret}
+                onChange={handleBitmexInputChange("api_secret")}
+                placeholder="••••••"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+              <button
+                type="submit"
+                className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={savingBitmexCreds}
+              >
+                {bitmexCreds.configured ? "Overwrite credentials" : "Save credentials"}
+              </button>
+              <span>Saving replaces any previously stored key.</span>
+            </div>
+          </form>
+        </div>
+      </section>
 
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-white">Strategy monitoring</h2>

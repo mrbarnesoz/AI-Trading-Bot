@@ -265,7 +265,11 @@ def run_backtest(
                 delta_sign = np.sign(delta)
                 side = "buy" if delta_sign > 0 else "sell"
 
-                maker_candidate = backtest_cfg.entry_mode == "maker_post_only" and abs(delta) > 0
+                maker_candidate = (
+                    backtest_cfg.entry_mode == "maker_post_only"
+                    and abs(delta) > 0
+                    and spread_bps <= backtest_cfg.cancel_spread_bps
+                )
 
                 if maker_candidate:
                     if pending_order is None:
@@ -296,8 +300,6 @@ def run_backtest(
                             }
                             trailing_manager.record_execution(symbol, payload, market_state)
                             maker_event_flags[bar_pos] = True
-                            pending_order = None
-                        elif spread_bps > backtest_cfg.cancel_spread_bps:
                             pending_order = None
                         else:
                             pending_order["limit_price"] = limit_px

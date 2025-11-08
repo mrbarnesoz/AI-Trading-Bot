@@ -20,6 +20,7 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "sweeps"
 try:
     sys.path.insert(0, str(PROJECT_ROOT))
     from ai_trading_bot.config import load_config
+    from ai_trading_bot.pipeline import prepare_dataset
 except Exception as exc:  # pragma: no cover - handled via CLI output
     print(f"Unable to import ai_trading_bot (did you install the repo in editable mode?): {exc}", file=sys.stderr)
     raise
@@ -39,6 +40,7 @@ SWEEP_MODULES = {
     "maker_swing": "ai_trading_bot.experiments.maker_reversion_band_sweep",
     "maker_keltner": "ai_trading_bot.experiments.maker_keltner_ride_sweep",
     "taker_momo_burst": "ai_trading_bot.experiments.taker_momo_burst_sweep",
+    "ml_trend": "ai_trading_bot.experiments.ml_trend_sweep",
 }
 
 
@@ -87,6 +89,7 @@ def _run_single(task: tuple[str, Path, Path, Dict[str, Dict[str, Iterable[object
     strategy_name, config_path, output_dir, grid_override = task
     module = _resolve_module(strategy_name)
     config = load_config(str(config_path))
+    config.sweep_mode = True
     overrides = grid_override.get(strategy_name)
     out_path = module.main(config, output_dir=output_dir, grid_override=overrides)
     return {
@@ -99,6 +102,21 @@ def _run_single(task: tuple[str, Path, Path, Dict[str, Dict[str, Iterable[object
 def _detect_strategy_name(config_path: Path) -> str:
     config = load_config(str(config_path))
     return str(config.strategy.name or "").strip()
+
+
+def _precache_data(config_path: Path) -> None:
+    """Fetch datasets once so later sweeps hit the local cache."""
+    config = load_config(str(config_path))
+    try:
+        prepare_dataset(config, force_download=False)
+        logger.info(
+            "Cached data for %s (%s %s)",
+            config_path.name,
+            config.data.symbol,
+            config.data.interval,
+        )
+    except Exception as exc:
+        logger.warning("Failed to precache data for %s: %s", config_path, exc)
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,6 +150,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="How many configs to sweep in parallel. Use higher values on multi-core/cloud machines.",
+    )
+    parser.add_argument(
+        "--skip-precache",
+        action="store_true",
+        help="Skip the pre-cache step (not recommended if BitMEX rate-limits are an issue).",
     )
     parser.add_argument(
         "--dry-run",
@@ -181,6 +204,11 @@ def main() -> None:
         for strategy_name, cfg_path, *_ in targets:
             logger.info("Would sweep %s (%s)", cfg_path, strategy_name)
         return
+
+    if not args.skip_precache:
+        logger.info("Pre-caching datasets to avoid repeated API downloads...")
+        for _, cfg_path, *_ in targets:
+            _precache_data(cfg_path)
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 

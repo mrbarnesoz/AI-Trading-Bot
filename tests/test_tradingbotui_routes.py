@@ -45,6 +45,9 @@ def app(monkeypatch, tmp_path):
     monkeypatch.setattr(tasks, "DECISION_LOG_PATH", decision_log_path, raising=False)
     monkeypatch.setattr(tasks, "GUARDRAIL_LOG_PATH", guardrail_log_path, raising=False)
     monkeypatch.setattr(tasks, "GUARDRAIL_SNAPSHOT_DIR", guardrail_snapshot_dir, raising=False)
+    bitmex_creds_path = logs_dir / "bitmex_credentials.json"
+    monkeypatch.setattr(routes.tasks, "BITMEX_CREDENTIALS_PATH", bitmex_creds_path, raising=False)
+    monkeypatch.setattr(tasks, "BITMEX_CREDENTIALS_PATH", bitmex_creds_path, raising=False)
     monkeypatch.setattr(tasks, "spawn_plan_runner", lambda *args, **kwargs: None)
     application = create_app()
     application.config["TESTING"] = True
@@ -574,6 +577,32 @@ def test_run_backtest_subprocess_handles_multiline_json(monkeypatch, tmp_path):
     monkeypatch.setattr(tasks.subprocess, "run", fake_run)
     payload = tasks._run_backtest_subprocess(config_path)
     assert payload == {"foo": 1, "bar": 2}
+
+
+def test_bitmex_credentials_roundtrip(app):
+    client = app.test_client()
+    response = client.get("/api/exchanges/bitmex/credentials")
+    assert response.status_code == 200
+    assert response.get_json()["configured"] is False
+
+    response = client.post(
+        "/api/exchanges/bitmex/credentials",
+        json={"api_key": "TESTKEY123", "api_secret": "SECRET456"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["configured"] is True
+    assert "TEST" in payload["api_key_preview"]
+
+    response = client.get("/api/exchanges/bitmex/credentials")
+    assert response.status_code == 200
+    assert response.get_json()["configured"] is True
+
+
+def test_bitmex_credentials_validation(app):
+    client = app.test_client()
+    response = client.post("/api/exchanges/bitmex/credentials", json={"api_key": ""})
+    assert response.status_code == 400
 
 
 def test_api_clear_backtest_results_moves_files(app):

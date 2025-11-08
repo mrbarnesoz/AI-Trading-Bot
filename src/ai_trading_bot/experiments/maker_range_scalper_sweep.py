@@ -16,7 +16,7 @@ from ai_trading_bot.pipeline import execute_backtest
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRID = {
-    "timeframe": ["5m"],
+    "timeframe": ["5m", "15m"],
     "range_lookback": [20, 40, 80],
     "enter_at_pct_of_range": [0.15, 0.25, 0.35],
     "tp_pct_of_range": [0.10, 0.15],
@@ -26,6 +26,11 @@ DEFAULT_GRID = {
     "signals.post.hysteresis_k_atr": [0.6, 0.9],
     "risk.cap_fraction": [0.005, 0.01],
     "execution.cancel_spread_bps": [1.0, 2.0],
+    "filters.min_adx": [6, 10, 14],
+    "filters.min_trend_slope": [0.0, 0.0003, 0.0006],
+    "filters.min_atr_frac": [0.0005, 0.0008, 0.0010],
+    "pipeline.long_threshold": [0.54, 0.57, 0.6],
+    "pipeline.short_threshold": [0.46, 0.43, 0.4],
 }
 
 ACCEPT = {
@@ -48,6 +53,11 @@ CSV_FIELDS = [
     "signals.post.min_hold_bars",
     "signals.post.hysteresis_k_atr",
     "risk.cap_fraction",
+    "filters.min_adx",
+    "filters.min_trend_slope",
+    "filters.min_atr_frac",
+    "pipeline.long_threshold",
+    "pipeline.short_threshold",
     "execution.cancel_spread_bps",
     "total_return",
     "annualised_return",
@@ -98,6 +108,12 @@ def _configure_iteration(base_cfg: AppConfig, combo: Dict[str, object]) -> AppCo
     cfg.signals.post.hysteresis_k_atr = hyst_k
     cfg.backtest.min_hold_bars = min_hold
     cfg.filters.hysteresis_k_atr = hyst_k
+
+    cfg.filters.min_adx = float(combo["filters.min_adx"])
+    cfg.filters.min_trend_slope = float(combo["filters.min_trend_slope"])
+    cfg.filters.min_atr_frac = float(combo["filters.min_atr_frac"])
+    cfg.pipeline.long_threshold = float(combo["pipeline.long_threshold"])
+    cfg.pipeline.short_threshold = float(combo["pipeline.short_threshold"])
 
     cap_frac = float(combo["risk.cap_fraction"])
     cfg.backtest.position_capital_fraction = cap_frac
@@ -190,4 +206,3 @@ def main(
 
 
 __all__ = ["main", "DEFAULT_GRID", "ACCEPT"]
-

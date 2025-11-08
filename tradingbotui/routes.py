@@ -1623,6 +1623,22 @@ def api_get_backtest_result(result_file: str):
     return jsonify(payload)
 
 
+@api_bp.route('/exchanges/bitmex/credentials', methods=['GET'])
+def api_get_bitmex_credentials():
+    return jsonify(tasks.get_bitmex_credentials())
+
+
+@api_bp.route('/exchanges/bitmex/credentials', methods=['POST'])
+def api_set_bitmex_credentials():
+    payload = request.get_json(silent=True) or {}
+    api_key = str(payload.get('api_key') or '').strip()
+    api_secret = str(payload.get('api_secret') or '').strip()
+    if not api_key or not api_secret:
+        return jsonify({'error': 'missing_fields', 'details': 'api_key and api_secret are required.'}), 400
+    result = tasks.update_bitmex_credentials(api_key, api_secret)
+    return jsonify(result)
+
+
 @api_bp.route('/backtests/results', methods=['DELETE'])
 def api_clear_backtest_results():
     archive = request.args.get('archive', default='1')

@@ -35,6 +35,7 @@ GUARDRAIL_LOG_PATH = LOG_DIR / "guardrail_events.jsonl"
 GUARDRAIL_SNAPSHOT_DIR = RESULTS_DIR / "guardrail_snapshots"
 RESULTS_UI_DIR = RESULTS_DIR / "ui" / "backtest"
 RESULTS_UI_DIR.mkdir(parents=True, exist_ok=True)
+BITMEX_CREDENTIALS_PATH = LOG_DIR / "bitmex_credentials.json"
 
 BACKTEST_SCRIPT = Path("scripts") / "backtest.py"
 
@@ -1011,6 +1012,33 @@ def clear_guardrail_logs() -> Dict[str, Any]:
     return {"status": "cleared", "removed": removed_files}
 
 
+def get_bitmex_credentials() -> Dict[str, Any]:
+    payload = _read_json(BITMEX_CREDENTIALS_PATH, {})
+    configured = bool(payload.get("api_key") and payload.get("api_secret"))
+    api_key = str(payload.get("api_key") or "")
+    preview = ""
+    if configured and api_key:
+        if len(api_key) <= 6:
+            preview = api_key
+        else:
+            preview = f"{api_key[:4]}…{api_key[-2:]}"
+    return {
+        "configured": configured,
+        "api_key_preview": preview,
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def update_bitmex_credentials(api_key: str, api_secret: str) -> Dict[str, Any]:
+    record = {
+        "api_key": api_key.strip(),
+        "api_secret": api_secret.strip(),
+        "updated_at": _timestamp(),
+    }
+    _write_json(BITMEX_CREDENTIALS_PATH, record)
+    return get_bitmex_credentials()
+
+
 __all__ = [
     "get_trading_status",
     "get_open_positions_summary",
@@ -1030,4 +1058,6 @@ __all__ = [
     "clear_trade_history",
     "clear_job_registry",
     "clear_guardrail_logs",
+    "get_bitmex_credentials",
+    "update_bitmex_credentials",
 ]

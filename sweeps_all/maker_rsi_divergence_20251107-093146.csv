@@ -1,0 +1,1 @@
+timeframe,rsi_len,div_window,rsi_entry,confirm_k_atr,signals.post.min_hold_bars,signals.post.hysteresis_k_atr,tp_k_atr,sl_k_atr,risk.cap_fraction,execution.cancel_spread_bps,total_return,annualised_return,annualised_volatility,calc_sharpe,expectancy_after_costs,max_drawdown,trades_count,avg_slippage_bps,maker_fill_ratio,pass

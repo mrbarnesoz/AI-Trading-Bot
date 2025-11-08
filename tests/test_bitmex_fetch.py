@@ -11,8 +11,10 @@ from ai_trading_bot.data.fetch import fetch_bitmex_ohlcv, get_price_data
 
 
 class _FakeResponse:
-    def __init__(self, payload: List[Dict[str, Any]]) -> None:
+    def __init__(self, payload: List[Dict[str, Any]], *, status_code: int = 200, headers: Dict[str, Any] | None = None) -> None:
         self._payload = payload
+        self.status_code = status_code
+        self.headers: Dict[str, Any] = headers or {}
 
     def raise_for_status(self) -> None:  # pragma: no cover - nothing to raise in tests
         return
@@ -123,3 +125,37 @@ def test_get_price_data_uses_cache(monkeypatch, tmp_path, caplog):
     assert len(data) == 2
     assert list(data.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert data.index.tzinfo is not None
+
+
+def test_fetch_bitmex_handles_missing_keys_then_recovers(monkeypatch, tmp_path):
+    bad_payload = [
+        {
+            "error": {"message": "Too many requests", "name": "HTTPError"},
+        }
+    ]
+    good_payload = [
+        {
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 5000.0,
+        }
+    ]
+    payloads = [bad_payload, good_payload, []]
+    calls = {"count": 0}
+
+    def fake_get(url, params, timeout):
+        idx = min(calls["count"], len(payloads) - 1)
+        calls["count"] += 1
+        return _FakeResponse(payloads[idx])
+
+    monkeypatch.setattr("ai_trading_bot.data.fetch.requests.get", fake_get)
+    monkeypatch.setattr("ai_trading_bot.data.fetch.time.sleep", lambda *_: None)
+
+    out_csv = tmp_path / "recover.csv"
+    df = fetch_bitmex_ohlcv("XBTUSD", "1h", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", out_csv)
+
+    assert len(df) == 1
+    assert calls["count"] >= 2

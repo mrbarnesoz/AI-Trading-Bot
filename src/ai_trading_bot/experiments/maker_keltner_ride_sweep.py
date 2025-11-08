@@ -25,7 +25,9 @@ DEFAULT_GRID = {
     "trailing.trail_k": [3.0, 4.0, 5.0],
     "trailing.ttp_k": [2.0, 3.0, 4.0],
     "risk.cap_fraction": [0.02, 0.03],
+    "risk.max_total_fraction": [0.06, 0.09],
     "execution.cancel_spread_bps": [1.0, 2.0],
+    "risk.trailing.enabled": [True, False],
 }
 
 ACCEPT = {
@@ -49,7 +51,9 @@ CSV_FIELDS = [
     "trailing.trail_k",
     "trailing.ttp_k",
     "risk.cap_fraction",
+    "risk.max_total_fraction",
     "execution.cancel_spread_bps",
+    "risk.trailing.enabled",
     "total_return",
     "annualised_return",
     "annualised_volatility",
@@ -103,7 +107,7 @@ def _configure_iteration(base_cfg: AppConfig, combo: Dict[str, object]) -> AppCo
 
     cap_frac = float(combo["risk.cap_fraction"])
     cfg.backtest.position_capital_fraction = cap_frac
-    cfg.backtest.max_total_capital_fraction = min(0.3, cap_frac * 3.0)
+    cfg.backtest.max_total_capital_fraction = float(combo["risk.max_total_fraction"])
 
     cancel_spread = float(combo["execution.cancel_spread_bps"])
     cfg.backtest.cancel_spread_bps = cancel_spread
@@ -111,9 +115,14 @@ def _configure_iteration(base_cfg: AppConfig, combo: Dict[str, object]) -> AppCo
     trail_k = float(combo["trailing.trail_k"])
     ttp_k = float(combo["trailing.ttp_k"])
     trailing = cfg.risk.trailing
-    trailing.enabled = True
-    trailing.k_atr.setdefault("stop", {})["swing"] = trail_k
-    trailing.k_atr.setdefault("take", {})["swing"] = ttp_k
+    trailing_enabled = bool(combo["risk.trailing.enabled"])
+    trailing.enabled = trailing_enabled
+    if trailing_enabled:
+        trailing.k_atr.setdefault("stop", {})["swing"] = trail_k
+        trailing.k_atr.setdefault("take", {})["swing"] = ttp_k
+    else:
+        trailing.k_atr.setdefault("stop", {}).pop("swing", None)
+        trailing.k_atr.setdefault("take", {}).pop("swing", None)
 
     return cfg
 
@@ -174,16 +183,18 @@ def main(
             writer.writerow(row)
 
             logger.debug(
-                "Keltner ride sweep timeframe=%s ema=%s mult=%.2f confirm=%.2f hold=%s hyst=%.2f trail=%.2f/%.2f cap=%.3f spread=%.1f -> Sharpe=%.4f trades=%s",
+                "Keltner ride sweep timeframe=%s ema=%s mult=%.2f confirm=%.2f hold=%s hyst=%.2f trail=%s %.2f/%.2f cap=%.3f totcap=%.2f spread=%.1f -> Sharpe=%.4f trades=%s",
                 combo["timeframe"],
                 combo["ema_len"],
                 combo["keltner_mult"],
                 combo["entry_confirm_k_atr"],
                 combo["signals.post.min_hold_bars"],
                 combo["signals.post.hysteresis_k_atr"],
+                combo["risk.trailing.enabled"],
                 combo["trailing.trail_k"],
                 combo["trailing.ttp_k"],
                 combo["risk.cap_fraction"],
+                combo["risk.max_total_fraction"],
                 combo["execution.cancel_spread_bps"],
                 row["calc_sharpe"],
                 row["trades_count"],

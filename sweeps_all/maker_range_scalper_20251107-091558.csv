@@ -1,0 +1,7 @@
+timeframe,range_lookback,enter_at_pct_of_range,tp_pct_of_range,sl_pct_of_range,session,signals.post.min_hold_bars,signals.post.hysteresis_k_atr,risk.cap_fraction,execution.cancel_spread_bps,total_return,annualised_return,annualised_volatility,calc_sharpe,expectancy_after_costs,max_drawdown,trades_count,avg_slippage_bps,maker_fill_ratio,pass
+5m,20,0.15,0.1,0.12,Asia,6,0.6,0.005,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+5m,20,0.15,0.1,0.12,Asia,6,0.6,0.005,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+5m,20,0.15,0.1,0.12,Asia,6,0.6,0.01,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+5m,20,0.15,0.1,0.12,Asia,6,0.6,0.01,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+5m,20,0.15,0.1,0.12,Asia,6,0.9,0.005,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False
+5m,20,0.15,0.1,0.12,Asia,6,0.9,0.005,2.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,False

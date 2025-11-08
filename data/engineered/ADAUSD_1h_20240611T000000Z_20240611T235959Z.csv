@@ -1,1 +1,3 @@
-Date,Open,High,Low,Close,Volume,return_1d,volatility_5,rolling_volume,atr_14,adx_14,adx,trend_slope,vwap_dev_z,spread_z,sma_10,ema_21,rsi_14,macd,macd_signal,macd_hist,target_return,target
+version https://git-lfs.github.com/spec/v1
+oid sha256:ca7fc1b77b4993567bc212359ea351223a41dfe77893248f2d6e616c37291347
+size 190
